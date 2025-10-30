@@ -29,6 +29,8 @@ type Row = {
 export default function Home() {
   const [rows, setRows] = useState<Row[]>([]);
   const [isRatio, setIsRatio] = useState(true);
+  // Mirror x-axis (e.g. show 5 -> 0.1 instead of 0.1 -> 5)
+  const [mirrorX, setMirrorX] = useState(false);
   const [xLabel, setXLabel] = useState("Effect");
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   // Fullscreen state and viewport height for fullscreen plot
@@ -207,6 +209,12 @@ export default function Home() {
       ticktext = candidates.map(fmtVal);
     }
 
+    // If mirrorX is enabled, flip the tick arrays so labels read from high → low
+    if (mirrorX && tickvals && ticktext) {
+      tickvals = [...tickvals].reverse();
+      ticktext = [...ticktext].reverse();
+    }
+
     return {
       autosize: true,
       margin: { l: estimatedLabelPx, r: 40, t: 40, b: 60 },
@@ -217,6 +225,8 @@ export default function Home() {
         tickpadding: 2,
         ticklen: 6,
         position: Math.max(0, Math.min(1, axisPosition)),
+        // When mirrorX is true we ask Plotly to reverse the axis so numbers display high→low
+        ...(mirrorX ? { autorange: 'reversed' as const } : {}),
         ...(tickvals ? { tickmode: 'array' as const, tickvals, ticktext } : {}),
       },
       yaxis: {
@@ -239,7 +249,7 @@ export default function Home() {
       ],
       height: plotHeight,
     };
-  }, [augmented, isRatio, xLabel]);
+  }, [augmented, isRatio, xLabel, mirrorX]);
 
   const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
@@ -354,6 +364,13 @@ export default function Home() {
                 <Label className="inline-flex items-center gap-2">
                   <input id="ratio" type="checkbox" checked={isRatio} onChange={(e) => setIsRatio(e.target.checked)} className="w-4 h-4" />
                   <span className="text-sm">Treat effects as ratios (log-scale pooling)</span>
+                </Label>
+              </div>
+
+              <div className="mt-2">
+                <Label className="inline-flex items-center gap-2">
+                  <input id="mirror-x" type="checkbox" checked={mirrorX} onChange={(e) => setMirrorX(e.target.checked)} className="w-4 h-4" />
+                  <span className="text-sm">Mirror x-axis (show high → low)</span>
                 </Label>
               </div>
 
