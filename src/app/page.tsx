@@ -29,7 +29,7 @@ type Row = {
 export default function Home() {
   const [rows, setRows] = useState<Row[]>([]);
   const [isRatio, setIsRatio] = useState(true);
-  const [xLabel, setXLabel] = useState("Effect (e.g. Odds Ratio)");
+  const [xLabel, setXLabel] = useState("Effect");
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   // Fullscreen state and viewport height for fullscreen plot
   const [fullOpen, setFullOpen] = useState(false);
@@ -198,7 +198,7 @@ export default function Home() {
             <CardHeader>
               <CardTitle>Upload CSV</CardTitle>
               <CardDescription>
-                Columns required: <code>study,effect,ci_low,ci_high</code>. Optional: <code>weight</code>.
+                Required columns:<br/> <code>study,effect,ci_low,ci_high</code>. <br/>Optional columns:<br/> <code>weight</code>.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -249,8 +249,8 @@ export default function Home() {
         <div className="md:col-span-2">
           <Card>
             <CardHeader>
-              <CardTitle>Data preview</CardTitle>
-              <CardDescription>Preview parsed rows and the generated forest plot.</CardDescription>
+              <CardTitle>Data view</CardTitle>
+              <CardDescription>View parsed rows and the generated forest plot.</CardDescription>
             </CardHeader>
             <CardContent>
               {rows.length === 0 ? (
