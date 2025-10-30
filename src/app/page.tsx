@@ -94,30 +94,11 @@ export default function Home() {
     });
   }, [rows, isRatio]);
 
-  // ----- Pooled fixed-effect estimate -----
-  const pooled = useMemo(() => {
-    if (augmented.length === 0) return null;
-    const values = augmented.map((r) => (isRatio ? Math.log(r.effect) : r.effect));
-    const ses = augmented.map((r) =>
-      r.se ?? (isRatio ? (Math.log(Math.max(r.ci_high, 1e-12)) - Math.log(Math.max(r.ci_low, 1e-12))) / (2 * 1.96) : (r.ci_high - r.ci_low) / (2 * 1.96))
-    );
-    const weights = ses.map((s) => (s > 0 ? 1 / (s * s) : 0));
-    const sumW = weights.reduce((a, b) => a + b, 0);
-    if (sumW === 0) return null;
-    const mean = values.reduce((a, v, i) => a + v * weights[i], 0) / sumW;
-    const seMean = Math.sqrt(1 / sumW);
-    if (isRatio) {
-      const est = Math.exp(mean);
-      return { est, lower: Math.exp(mean - 1.96 * seMean), upper: Math.exp(mean + 1.96 * seMean), logEst: mean, seLog: seMean };
-    } else {
-      return { est: mean, lower: mean - 1.96 * seMean, upper: mean + 1.96 * seMean, se: seMean };
-    }
-  }, [augmented, isRatio]);
-
   // ----- Prepare Plotly data -----
-  const plotData = useMemo<{ traceStudies: Data; pooledTrace: Data | null } | null>(() => {
+  const plotData = useMemo<Data | null>(() => {
     if (augmented.length === 0) return null;
-    const y = augmented.map((_, i) => augmented.length - i + 1);
+    // map studies to y positions 1..N so the bottom-most study sits at y=1
+    const y = augmented.map((_, i) => augmented.length - i);
     const x = augmented.map((r) => r.effect);
 
     const error_x = {
@@ -137,7 +118,7 @@ export default function Home() {
     const minMarkerSize = 6;
     const markerSizes = weights.map((w) => (w / maxW) * maxMarkerSize + minMarkerSize);
 
-    const traceStudies: Data = ({
+    return ({
       x,
       y,
       mode: "markers" as const,
@@ -151,40 +132,17 @@ export default function Home() {
       }),
       showlegend: false,
     } as Data);
-
-    const pooledY = 1;
-    const pooledTrace: Data | null = pooled
-      ? ({
-          x: [pooled.est],
-          y: [pooledY],
-          mode: "markers" as const,
-          // pooled marker scaled relative to maxMarkerSize so it stays proportional
-          marker: { symbol: "diamond", size: Math.round(maxMarkerSize * 0.9), line: { width: 1 } },
-          error_x: {
-            type: "data" as const,
-            symmetric: false,
-            array: [pooled.upper - pooled.est],
-            arrayminus: [pooled.est - pooled.lower],
-            thickness: 2,
-            width: 0,
-          },
-          hoverinfo: "text",
-          text: [`Pooled: ${pooled.est}<br>CI: [${pooled.lower}, ${pooled.upper}]`],
-          showlegend: false,
-          type: "scatter" as const,
-        } as Data)
-      : null;
-
-    return { traceStudies, pooledTrace };
-  }, [augmented, pooled]);
+  }, [augmented]);
 
   // ----- Compute Plot layout -----
   const layout = useMemo<Partial<Layout>>(() => {
     if (augmented.length === 0) return {};
+    // set y axis range to 0..N+1 so studies at y=1..N sit above the axis (bottom study at y=1)
     const yMin = 0;
-    const yMax = augmented.length + 2;
-    const desiredAxisY = 0;
-    const axisPosition = (desiredAxisY - yMin) / (yMax - yMin);
+    const yMax = augmented.length + 1;
+    const desiredAxisY = yMin; // place x-axis at the bottom of the plot area
+    const denom = yMax - yMin || 1; // guard against single-item charts
+    const axisPosition = (desiredAxisY - yMin) / denom;
 
     // compute left margin from longest study label so plot area is centered and labels fit
     const maxLabelLen = augmented.reduce((m, r) => Math.max(m, (r.study || "").length), 0);
@@ -205,8 +163,8 @@ export default function Home() {
       },
       yaxis: {
         tickmode: "array",
-        tickvals: [0, 1, ...augmented.map((_, i) => augmented.length - i + 1)],
-        ticktext: ["", "Pooled", ...augmented.map((r) => r.study)],
+        tickvals: augmented.map((_, i) => augmented.length - i),
+        ticktext: augmented.map((r) => r.study),
         range: [yMin, yMax],
         autorange: false,
       },
@@ -215,8 +173,8 @@ export default function Home() {
           type: "line",
           x0: isRatio ? 1 : 0,
           x1: isRatio ? 1 : 0,
-          y0: 0,
-          y1: augmented.length + 2,
+          y0: yMin,
+          y1: yMax,
           line: { color: "rgba(0,0,0,0.3)", width: 2 },
         },
       ],
@@ -334,7 +292,7 @@ export default function Home() {
                     </div>
                     {plotData && (
                       <Plot
-                        data={[plotData.traceStudies, ...(plotData.pooledTrace ? [plotData.pooledTrace] : [])] as Data[]}
+                        data={[plotData] as Data[]}
                         layout={layout}
                         useResizeHandler={true}
                         style={{ width: "100%", height: plotHeight }}
@@ -380,7 +338,7 @@ export default function Home() {
             </div>
             <div className="mx-auto h-full max-w-7xl rounded bg-white dark:bg-slate-900 p-4 shadow-lg" style={{ height: fullHeight, width: "calc(100% - 48px)" }}>
               <Plot
-                data={[plotData.traceStudies, ...(plotData.pooledTrace ? [plotData.pooledTrace] : [])] as Data[]}
+                data={[plotData] as Data[]}
                 layout={{ ...layout, height: fullHeight }}
                 useResizeHandler={true}
                 style={{ width: "100%", height: fullHeight }}
