@@ -154,6 +154,74 @@ export default function Home() {
     const estimatedLabelPx = Math.min(600, Math.max(100, 12 + maxLabelLen * 8));
     const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
+    // Build custom tick values/text for log scale so small ratios look like `.3`, `.4`, etc
+    let tickvals: number[] | undefined = undefined;
+    let ticktext: string[] | undefined = undefined;
+
+    if (isRatio) {
+      // determine x range from effect CIs (safeguard to positive numbers)
+      const allX = augmented.flatMap(r => [Math.max(1e-12, r.ci_low), Math.max(1e-12, r.ci_high), Math.max(1e-12, r.effect)]);
+      const xMin = Math.min(...allX);
+      const xMax = Math.max(...allX);
+
+      // compute decades
+      const decadeMin = Math.floor(Math.log10(Math.max(xMin, 1e-12)));
+      const decadeMax = Math.ceil(Math.log10(Math.max(xMax, 1e-12)));
+
+      // candidate mantissas
+      const mantissasFull = [1,2,3,4,5,6,7,8,9];
+      const mantissasReduced = [1,2,5];
+
+      // try full mantissas first
+      let candidates: number[] = [];
+      for (let d = decadeMin; d <= decadeMax; d++) {
+        for (const m of mantissasFull) {
+          candidates.push(m * Math.pow(10, d));
+        }
+      }
+
+      // filter to range
+      candidates = candidates.filter(v => v >= xMin && v <= xMax);
+
+      // if too many ticks, use reduced mantissas and recompute
+      const maxTicks = 12;
+      if (candidates.length > maxTicks) {
+        candidates = [];
+        for (let d = decadeMin; d <= decadeMax; d++) {
+          for (const m of mantissasReduced) {
+            candidates.push(m * Math.pow(10, d));
+          }
+        }
+        candidates = candidates.filter(v => v >= xMin && v <= xMax);
+      }
+
+      // if still empty (e.g., all values inside single mantissa), fall back to a few nice ticks
+      if (candidates.length === 0) {
+        // produce a linear-like set between xMin and xMax (log spacing)
+        const steps = Math.min(6, Math.max(2, Math.ceil((xMax / xMin))));
+        const logMin = Math.log10(xMin);
+        const logMax = Math.log10(xMax);
+        for (let i = 0; i <= steps; i++) {
+          const v = Math.pow(10, logMin + (i / steps) * (logMax - logMin));
+          candidates.push(v);
+        }
+      }
+
+      // format labels: for values < 1 remove leading zero (0.3 -> .3). Choose decimals by magnitude.
+      const fmtVal = (v: number) => {
+        if (v >= 1) {
+          // show integers without decimal when possible, otherwise 1 decimal
+          return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(1)));
+        }
+        // for v < 1 choose 1 decimal for >=0.1 otherwise 2 decimals for smaller numbers
+        const prec = v >= 0.1 ? 1 : 2;
+        return v.toFixed(prec).replace(/^0(?=\.)/, '');
+      };
+
+      tickvals = candidates;
+      ticktext = candidates.map(fmtVal);
+    }
+
     return {
       autosize: true,
       margin: { l: estimatedLabelPx, r: 40, t: 40, b: 60 },
@@ -164,6 +232,8 @@ export default function Home() {
         tickpadding: 2,
         ticklen: 6,
         position: Math.max(0, Math.min(1, axisPosition)),
+        // when we computed tickvals/ticktext for log scale, expose them so labels render as desired
+        ...(tickvals ? { tickmode: 'array' as const, tickvals, ticktext } : {}),
       },
       yaxis: {
         tickmode: "array",
