@@ -8,7 +8,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Slider } from "@/components/ui/slider";
+import {
+  Dropzone,
+  DropzoneContent,
+  DropzoneEmptyState,
+} from "@/components/ui/shadcn-io/dropzone";
 
 // Load Plotly and the react-plotly factory only on the client to avoid server-side
 // evaluation of `plotly.js-basic-dist` (which references `self`/`window`).
@@ -40,7 +46,8 @@ export default function Home() {
   // Mirror x-axis (e.g. show 5 -> 0.1 instead of 0.1 -> 5)
   const [mirrorX, setMirrorX] = useState(false);
   const [xLabel, setXLabel] = useState("Effect");
-  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  // track uploaded files so Dropzone can show content
+  const [uploadedFiles, setUploadedFiles] = useState<File[] | undefined>(undefined);
   // Fullscreen state and viewport height for fullscreen plot
   const [fullOpen, setFullOpen] = useState(false);
   const [fullHeight, setFullHeight] = useState<number>(() => Math.max(600, typeof window !== "undefined" ? window.innerHeight - 120 : 600));
@@ -384,52 +391,46 @@ export default function Home() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <input
-                id="csv-file"
-                className="sr-only"
-                type="file"
-                accept=".csv,text/csv"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
+              <Dropzone
+                src={uploadedFiles}
+                accept={{ 'text/csv': ['.csv'] }}
+                maxFiles={1}
+                onDrop={(acceptedFiles) => {
+                  const f = acceptedFiles?.[0];
                   if (f) {
-                    setUploadedFileName(f.name);
+                    setUploadedFiles([f]);
                     parseCSV(f);
                   }
                 }}
-              />
+              >
+                <DropzoneEmptyState />
+                <DropzoneContent />
+              </Dropzone>
 
-              <label htmlFor="csv-file" className="w-full flex items-center gap-3 justify-center rounded-md border-2 border-dashed border-slate-200 dark:border-slate-700 p-3 cursor-pointer hover:border-sky-300">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M16 3v4M8 3v4m0 0h8" />
-                </svg>
-                <span className="text-sm">Click to upload a CSV or drag it here</span>
-                <Badge className="ml-2" variant="secondary">CSV</Badge>
-              </label>
-
-              {uploadedFileName && (
+              {uploadedFiles && uploadedFiles.length > 0 && (
                 <div className="mt-2 flex items-center justify-between text-sm">
-                  <div className="text-slate-600">Selected: <strong className="text-slate-800 dark:text-slate-100">{uploadedFileName}</strong></div>
-                  <Button variant="ghost" size="sm" onClick={() => { setUploadedFileName(null); setRows([]); }}>Remove</Button>
+                  <div className="text-slate-600">Selected: <strong className="text-slate-800 dark:text-slate-100">{uploadedFiles[0].name}</strong></div>
+                  <Button variant="ghost" size="sm" onClick={() => { setUploadedFiles(undefined); setRows([]); }}>Remove</Button>
                 </div>
               )}
 
               <div className="mt-4">
                 <Label className="inline-flex items-center gap-2">
-                  <input id="ratio" type="checkbox" checked={isRatio} onChange={(e) => setIsRatio(e.target.checked)} className="w-4 h-4" />
+                  <Checkbox checked={isRatio} onCheckedChange={(v) => setIsRatio(Boolean(v))} />
                   <span className="text-sm">Treat effects as ratios (log-scale pooling)</span>
                 </Label>
               </div>
 
               <div className="mt-2">
                 <Label className="inline-flex items-center gap-2">
-                  <input id="mirror-x" type="checkbox" checked={mirrorX} onChange={(e) => setMirrorX(e.target.checked)} className="w-4 h-4" />
+                  <Checkbox checked={mirrorX} onCheckedChange={(v) => setMirrorX(Boolean(v))} />
                   <span className="text-sm">Mirror x-axis (show high → low)</span>
                 </Label>
               </div>
 
               <div className="mt-3">
                 <Label className="mb-1 block">X axis label</Label>
-                <Input value={xLabel} onChange={(e) => setXLabel(e.target.value)} />
+                <Input value={xLabel} onChange={(e) => setXLabel((e.target as HTMLInputElement).value)} />
               </div>
             </CardContent>
           </Card>
@@ -453,37 +454,34 @@ export default function Home() {
                   <div className="mb-3 flex flex-col gap-2">
                     <div className="flex items-center gap-3">
                       <Label className="whitespace-nowrap w-28 text-right">Table width</Label>
-                      <input
-                        type="range"
+                      <Slider
                         min={30}
                         max={300}
-                        value={tableWidthPercent}
-                        onChange={(e) => setTableWidthPercent(Number(e.target.value))}
+                        value={[tableWidthPercent]}
+                        onValueChange={(v) => setTableWidthPercent(v[0] ?? 100)}
                         className="w-72"
                       />
                       <div className="text-sm w-16 text-right">{tableWidthPercent}%</div>
                     </div>
                     <div className="flex items-center gap-3">
                       <Label className="whitespace-nowrap w-28 text-right">Plot width</Label>
-                      <input
-                        type="range"
+                      <Slider
                         min={30}
                         max={300}
-                        value={plotWidthPercent}
-                        onChange={(e) => setPlotWidthPercent(Number(e.target.value))}
+                        value={[plotWidthPercent]}
+                        onValueChange={(v) => setPlotWidthPercent(v[0] ?? 100)}
                         className="w-72"
                       />
                       <div className="text-sm w-16 text-right">{plotWidthPercent}%</div>
                     </div>
                     <div className="flex items-center gap-3">
                       <Label className="whitespace-nowrap w-28 text-right">Diamond size</Label>
-                      <input
-                        type="range"
+                      <Slider
                         min={0.5}
                         max={3}
                         step={0.1}
-                        value={diamondScale}
-                        onChange={(e) => setDiamondScale(Number(e.target.value))}
+                        value={[diamondScale]}
+                        onValueChange={(v) => setDiamondScale(v[0] ?? 1)}
                         className="w-72"
                       />
                       <div className="text-sm w-16 text-right">{diamondScale.toFixed(1)}x</div>
