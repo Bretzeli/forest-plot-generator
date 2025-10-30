@@ -45,6 +45,8 @@ export default function Home() {
   const [isRatio, setIsRatio] = useState(true);
   // Mirror x-axis (e.g. show 5 -> 0.1 instead of 0.1 -> 5)
   const [mirrorX, setMirrorX] = useState(false);
+  // Show grid lines on the plot (default true)
+  const [showGrid, setShowGrid] = useState(true);
   const [xLabel, setXLabel] = useState("Effect");
   // track uploaded files so Dropzone can show content
   const [uploadedFiles, setUploadedFiles] = useState<File[] | undefined>(undefined);
@@ -273,6 +275,8 @@ export default function Home() {
       margin: { l: estimatedLabelPx, r: 40, t: 40, b: 60 },
       xaxis: {
         title: { text: xLabel || "" },
+        showgrid: showGrid,
+        gridcolor: 'rgba(0,0,0,0.06)',
         type: isRatio ? "log" : undefined,
         zeroline: false,
         tickpadding: 2,
@@ -283,6 +287,8 @@ export default function Home() {
         ...(tickvals ? { tickmode: 'array' as const, tickvals, ticktext } : {}),
       },
       yaxis: {
+        showgrid: showGrid,
+        gridcolor: 'rgba(0,0,0,0.06)',
         tickmode: "array",
         tickvals: augmented.map((_, i) => augmented.length - i),
         ticktext: augmented.map((r) => r.study),
@@ -302,9 +308,29 @@ export default function Home() {
       ],
       height: plotHeight,
     };
-  }, [augmented, isRatio, xLabel, mirrorX]);
+  }, [augmented, isRatio, xLabel, mirrorX, showGrid]);
 
   const plotHeight = Math.max(400, augmented.length * 40 + 160);
+
+  // Generate a key for the Plot component so it will remount when layout-affecting
+  // options change. Remounting forces Plotly to recompute axis ticks properly
+  // (this mirrors the fix observed when opening fullscreen).
+  const plotKey = useMemo(() => {
+    return `p-${showGrid ? 1 : 0}-${isRatio ? 1 : 0}-${mirrorX ? 1 : 0}-${Math.round(diamondScale*10)}-${plotWidthPercent}-${estimatedLabelPx}`;
+  }, [showGrid, isRatio, mirrorX, diamondScale, plotWidthPercent, estimatedLabelPx]);
+
+  // Keep refs to the Plotly instances/graphDivs so we can call relayout/resize
+  // when toggling options that Plotly sometimes doesn't recalc correctly in-place.
+  const mainPlotRef = useRef<{ plotly: unknown; gd: unknown } | null>(null);
+  const fullPlotRef = useRef<{ plotly: unknown; gd: unknown } | null>(null);
+
+  // Minimal type describing the Plotly subset we call at runtime. Use unknown
+  // for inputs/outputs to avoid using `any` and satisfy lint rules.
+  type PlotlyLike = {
+    relayout?: (gd: unknown, update: Record<string, unknown>) => void;
+    Plots?: { resize?: (gd: unknown) => void } | undefined;
+    resize?: (gd: unknown) => void;
+  };
 
   useEffect(() => {
     const el = dataWrapperRef.current;
@@ -329,6 +355,49 @@ export default function Home() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [augmented]);
+
+  // When showGrid toggles, Plotly sometimes doesn't recompute tick placement
+  // properly in-place. Dispatch a window resize shortly after toggling so
+  // Plotly recalculates layout/ticks. This mirrors how opening fullscreen
+  // forces a layout pass and fixes the jumbled labels.
+  useEffect(() => {
+    // trigger two resize events with a slight delay to ensure Plotly reacts
+    const t1 = setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+    const t2 = setTimeout(() => window.dispatchEvent(new Event('resize')), 300);
+
+    // Also instruct Plotly directly to relayout/showgrid and resize. We attempt
+    // a couple of delayed calls to handle timing when the plot updates/remounts.
+    const tryRelayout = (ref: { plotly: unknown; gd: unknown } | null) => {
+      if (!ref || !ref.plotly || !ref.gd) return;
+      try {
+        // Narrow unknown to a small Plotly-like interface we can call safely.
+        const plotly = ref.plotly as PlotlyLike;
+        const gd = ref.gd;
+        // update grid visibility explicitly
+        if (typeof plotly.relayout === 'function') {
+          plotly.relayout(gd, { 'xaxis.showgrid': showGrid, 'yaxis.showgrid': showGrid });
+        }
+        // force a resize/layout pass
+        if (plotly.Plots && typeof plotly.Plots.resize === 'function') {
+          plotly.Plots.resize(gd);
+        } else if (typeof plotly.resize === 'function') {
+          plotly.resize(gd);
+        }
+      } catch {
+        // ignore; best-effort
+      }
+    };
+
+    const r1 = setTimeout(() => tryRelayout(mainPlotRef.current || fullPlotRef.current), 80);
+    const r2 = setTimeout(() => tryRelayout(mainPlotRef.current || fullPlotRef.current), 360);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(r1);
+      clearTimeout(r2);
+    };
+  }, [showGrid]);
 
   useEffect(() => {
     const wrapper = tableRef.current;
@@ -425,6 +494,13 @@ export default function Home() {
                 <Label className="inline-flex items-center gap-2">
                   <Checkbox checked={mirrorX} onCheckedChange={(v) => setMirrorX(Boolean(v))} />
                   <span className="text-sm">Mirror x-axis (show high → low)</span>
+                </Label>
+              </div>
+
+              <div className="mt-2">
+                <Label className="inline-flex items-center gap-2">
+                  <Checkbox checked={showGrid} onCheckedChange={(v) => setShowGrid(Boolean(v))} />
+                  <span className="text-sm">Show grid</span>
                 </Label>
               </div>
 
@@ -529,9 +605,12 @@ export default function Home() {
                       {plotData && (
                         <div style={{ width: '100%' }}>
                           <Plot
+                            key={plotKey}
                             data={[plotData] as Data[]}
                             layout={layout}
                             useResizeHandler={true}
+                            onInitialized={(figure: unknown, plotly: unknown) => { mainPlotRef.current = { plotly, gd: figure }; }}
+                            onUpdate={(figure: unknown, plotly: unknown) => { mainPlotRef.current = { plotly, gd: figure }; }}
                             style={{ width: "100%", height: plotHeight }}
                             config={{ responsive: true }}
                           />
@@ -579,9 +658,12 @@ export default function Home() {
             </div>
             <div className="mx-auto h-full max-w-7xl rounded bg-white dark:bg-slate-900 p-4 shadow-lg" style={{ height: fullHeight, width: "calc(100% - 48px)" }}>
               <Plot
+                key={plotKey + '-full'}
                 data={[plotData] as Data[]}
                 layout={{ ...layout, height: fullHeight }}
                 useResizeHandler={true}
+                onInitialized={(figure: unknown, plotly: unknown) => { fullPlotRef.current = { plotly, gd: figure }; }}
+                onUpdate={(figure: unknown, plotly: unknown) => { fullPlotRef.current = { plotly, gd: figure }; }}
                 style={{ width: "100%", height: fullHeight }}
                 config={{ responsive: true }}
               />
