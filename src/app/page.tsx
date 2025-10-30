@@ -51,6 +51,8 @@ export default function Home() {
   // Slider states: percentages (default 100 to keep current size)
   const [tableWidthPercent, setTableWidthPercent] = useState<number>(100);
   const [plotWidthPercent, setPlotWidthPercent] = useState<number>(100);
+  // Diamond size multiplier (1 = current default). Scales all marker sizes while keeping proportions.
+  const [diamondScale, setDiamondScale] = useState<number>(1);
 
   // Estimate label pixel width so we can expand the plot area when labels are long
   const estimatedLabelPx = useMemo(() => {
@@ -160,7 +162,8 @@ export default function Home() {
     const maxW = Math.max(...weights, 0.000001);
     const maxMarkerSize = 28;
     const minMarkerSize = 6;
-    const markerSizes = weights.map((w) => (w / maxW) * maxMarkerSize + minMarkerSize);
+    // Apply diamondScale so we can uniformly scale all marker sizes while keeping relative proportions.
+    const markerSizes = weights.map((w) => ((w / maxW) * maxMarkerSize + minMarkerSize) * diamondScale);
 
     return ({
       x,
@@ -180,7 +183,7 @@ export default function Home() {
       }),
       showlegend: false,
     } as Data);
-  }, [augmented]);
+  }, [augmented, diamondScale]);
 
   // ----- Compute Plot layout -----
   const layout = useMemo<Partial<Layout>>(() => {
@@ -471,6 +474,19 @@ export default function Home() {
                         className="w-72"
                       />
                       <div className="text-sm w-16 text-right">{plotWidthPercent}%</div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Label className="whitespace-nowrap w-28 text-right">Diamond size</Label>
+                      <input
+                        type="range"
+                        min={0.5}
+                        max={3}
+                        step={0.1}
+                        value={diamondScale}
+                        onChange={(e) => setDiamondScale(Number(e.target.value))}
+                        className="w-72"
+                      />
+                      <div className="text-sm w-16 text-right">{diamondScale.toFixed(1)}x</div>
                     </div>
                   </div>
                   {/* align at top and offset the table so its center lines up with plot center */}
