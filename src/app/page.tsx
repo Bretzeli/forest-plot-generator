@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import Papa from "papaparse";
 import dynamic from "next/dynamic";
 import type { Data, Layout } from "plotly.js-basic-dist";
@@ -34,6 +34,9 @@ export default function Home() {
   // Fullscreen state and viewport height for fullscreen plot
   const [fullOpen, setFullOpen] = useState(false);
   const [fullHeight, setFullHeight] = useState<number>(() => Math.max(600, typeof window !== "undefined" ? window.innerHeight - 120 : 600));
+  const dataWrapperRef = useRef<HTMLDivElement>(null);
+  const tableRef = useRef<HTMLDivElement>(null);
+  const plotWrapperRef = useRef<HTMLDivElement>(null);
 
   // ----- CSV Parsing -----
   function parseCSV(file: File) {
@@ -147,7 +150,8 @@ export default function Home() {
     // compute left margin from longest study label so plot area is centered and labels fit
     const maxLabelLen = augmented.reduce((m, r) => Math.max(m, (r.study || "").length), 0);
     // approx pixels per char; clamp to reasonable range (prevent excessive left padding)
-    const estimatedLabelPx = Math.min(140, Math.max(80, 10 + maxLabelLen * 7));
+    // increase cap so very long study names get enough space and don't get clipped
+    const estimatedLabelPx = Math.min(600, Math.max(100, 12 + maxLabelLen * 8));
     const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
     return {
@@ -167,6 +171,7 @@ export default function Home() {
         ticktext: augmented.map((r) => r.study),
         range: [yMin, yMax],
         autorange: false,
+        automargin: true,
       },
       shapes: [
         {
@@ -185,15 +190,84 @@ export default function Home() {
   // expose computed plotHeight for use in style on the Plot component
   const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
+  // Center the data view wrapper (inner part) in the full-width container
+  useEffect(() => {
+    const el = dataWrapperRef.current;
+    if (!el) return;
+    const handleResize = () => {
+      const contentWidth = el.scrollWidth;
+      const winW = window.innerWidth;
+      const parent = el.parentElement;
+      const parentRect = parent ? parent.getBoundingClientRect() : { left: 0 };
+      const parentLeft = parentRect.left;
+      // Compute margin so the content's center aligns with the viewport center,
+      // taking into account the parent's left offset within the viewport.
+      const newMarginLeft = (winW - contentWidth) / 2 - parentLeft;
+      el.style.marginLeft = `${newMarginLeft}px`;
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [augmented]);
+
+  // Align the table's row-center (tbody center) to the plot's center line
+  useEffect(() => {
+    const wrapper = tableRef.current;
+    const plotWrap = plotWrapperRef.current;
+    if (!wrapper || !plotWrap) return;
+
+    function alignRowCenter() {
+      const thead = wrapper!.querySelector('thead') as HTMLElement | null;
+      const tbody = wrapper!.querySelector('tbody') as HTMLElement | null;
+      const headerH = thead ? thead.offsetHeight : 0;
+      const tbodyH = tbody ? tbody.offsetHeight : 0;
+      const plotH = plotWrap!.clientHeight || plotHeight;
+      // Desired top offset so that header + tbody/2 sits at plotH/2
+      const desiredTop = plotH / 2 - (headerH + tbodyH / 2);
+      const marginTop = Math.max(0, Math.round(desiredTop));
+      wrapper!.style.marginTop = `${marginTop}px`;
+    }
+
+    alignRowCenter();
+    // recompute after a short timeout in case plot resizes content after render
+    const t = setTimeout(alignRowCenter, 250);
+    window.addEventListener('resize', alignRowCenter);
+
+    // Use ResizeObserver to detect dynamic size changes of the plot or table
+    // and realign immediately. This is more robust than relying only on timeouts.
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        alignRowCenter();
+      });
+      try {
+        ro.observe(plotWrap);
+        ro.observe(wrapper);
+      } catch (e) {
+        // ignore observe errors in older browsers
+      }
+    }
+
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('resize', alignRowCenter);
+      if (ro) {
+        try { ro.disconnect(); } catch (e) {}
+      }
+    };
+  }, [augmented, plotHeight]);
+
   return (
-    <main className="max-w-6xl mx-auto p-8">
+    // allow pages to be wider than the viewport so wide cards can overflow the
+    // browser and the user can scroll horizontally at the browser level.
+    <main className="w-full p-8">
       <header className="mb-6">
         <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">Forest Plot Generator</h1>
         <p className="mt-2 text-muted-foreground text-sm">Create forest plots from a CSV.</p>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <div className="md:col-span-1">
+      <div className="grid grid-cols-1 gap-4 mb-6">
+        <div>
           <Card>
             <CardHeader>
               <CardTitle>Upload CSV</CardTitle>
@@ -245,8 +319,16 @@ export default function Home() {
             </CardContent>
           </Card>
         </div>
+      </div>
 
-        <div className="md:col-span-2">
+      {/* Render Data view AFTER the grid so it's not constrained by the grid/container */}
+      {/* Use a full-viewport-width flex container to center the inner max-content
+          wrapper. This ensures centering relative to the viewport while the inner
+          wrapper can be wider than the viewport (causing browser horizontal scroll). */}
+      {/* Full-width wrapper (inside main). The inner wrapper is positioned via JS
+          so its center aligns with the viewport center (accounts for main padding). */}
+      <div style={{ width: "100%", display: "block", position: "relative" }}>
+        <div ref={dataWrapperRef} style={{ width: "max-content", marginLeft: 0 }}>
           <Card>
             <CardHeader>
               <CardTitle>Data view</CardTitle>
@@ -256,50 +338,54 @@ export default function Home() {
               {rows.length === 0 ? (
                 <div className="mt-3 text-sm text-muted-foreground">No data yet. Upload a CSV to begin.</div>
               ) : (
-                <div className="mt-3 flex gap-4 items-center">
-                  {/* left column: use a flex container to vertically center the inner scroller/table */}
-                  <div className="w-64 flex items-center" style={{ height: plotHeight }}>
-                    <div className="overflow-auto max-h-full w-full">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-left text-xs text-muted-foreground">
-                            <th className="pb-2">Study</th>
-                            <th className="pb-2 text-right">Effect</th>
-                            <th className="pb-2 text-right">CI</th>
-                            <th className="pb-2 text-right">Weight</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {augmented.map((r, i) => {
-                            const totalWeight = augmented.reduce((a, b) => a + (b.weightCalc ?? 0), 0);
-                            return (
-                              <tr key={i} className="border-b last:border-b-0">
-                                <td className="py-2 pr-3">{r.study}</td>
-                                <td className="py-2 text-right pr-3">{r.effect}</td>
-                                <td className="py-2 text-right pr-3">[{r.ci_low}, {r.ci_high}]</td>
-                                <td className="py-2 text-right pr-1">{((r.weightCalc ?? 0) / totalWeight * 100).toFixed(1)}%</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+                <div className="mt-3">
+                  {/* align at top and offset the table so its center lines up with plot center */}
+                  <div className="inline-flex items-start gap-6">
+                     {/* left column: full table (no internal scrolling) */}
+                     <div ref={tableRef} className="flex-shrink-0">
+                       <table className="text-sm table-auto whitespace-nowrap min-w-[600px]">
+                         <thead>
+                           <tr className="text-left text-xs text-muted-foreground">
+                             <th className="pb-2">Study</th>
+                             <th className="pb-2 text-right">Effect</th>
+                             <th className="pb-2 text-right">CI</th>
+                             <th className="pb-2 text-right">Weight</th>
+                           </tr>
+                         </thead>
+                         <tbody>
+                           {augmented.map((r, i) => {
+                             const totalWeight = augmented.reduce((a, b) => a + (b.weightCalc ?? 0), 0);
+                             return (
+                               <tr key={i} className="border-b last:border-b-0">
+                                 <td className="py-2 pr-3">{r.study}</td>
+                                 <td className="py-2 text-right pr-3">{r.effect}</td>
+                                 <td className="py-2 text-right pr-3">[{r.ci_low}, {r.ci_high}]</td>
+                                 <td className="py-2 text-right pr-1">{((r.weightCalc ?? 0) / totalWeight * 100).toFixed(1)}%</td>
+                               </tr>
+                             );
+                           })}
+                         </tbody>
+                       </table>
+                     </div>
 
-                  <div className="flex-1" style={{ height: plotHeight }}>
-                    <div className="flex items-center justify-end mb-2">
-                      <Button size="sm" onClick={() => setFullOpen(true)}>Full screen</Button>
-                    </div>
-                    {plotData && (
-                      <Plot
-                        data={[plotData] as Data[]}
-                        layout={layout}
-                        useResizeHandler={true}
-                        style={{ width: "100%", height: plotHeight }}
-                        config={{ responsive: true }}
-                      />
-                    )}
-                  </div>
+                     {/* right column: full-width plot */}
+                     <div ref={plotWrapperRef} style={{ minWidth: 900 }}>
+                       <div className="flex items-center justify-end mb-2">
+                         <Button size="sm" onClick={() => setFullOpen(true)}>Full screen</Button>
+                       </div>
+                       {plotData && (
+                         <div style={{ minWidth: 900 }}>
+                           <Plot
+                             data={[plotData] as Data[]}
+                             layout={layout}
+                             useResizeHandler={true}
+                             style={{ width: "100%", height: plotHeight }}
+                             config={{ responsive: true }}
+                           />
+                         </div>
+                       )}
+                     </div>
+                   </div>
                 </div>
               )}
             </CardContent>
