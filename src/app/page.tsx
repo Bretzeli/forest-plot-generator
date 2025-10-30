@@ -20,10 +20,18 @@ const Plot = dynamic(async () => {
 
 type Row = {
   study: string;
-  effect: number;
-  ci_low: number;
-  ci_high: number;
-  weight?: number;
+  // numeric fields can be missing for rows that only contain a study name
+  effect?: number | null;
+  ci_low?: number | null;
+  ci_high?: number | null;
+  weight?: number | null;
+};
+
+// Augmented row used internally: includes computed SE, computed weight and a flag
+type AugRow = Row & {
+  se: number | null;
+  weightCalc: number;
+  hasWeight: boolean;
 };
 
 export default function Home() {
@@ -44,6 +52,12 @@ export default function Home() {
   const [tableWidthPercent, setTableWidthPercent] = useState<number>(100);
   const [plotWidthPercent, setPlotWidthPercent] = useState<number>(100);
 
+  // Estimate label pixel width so we can expand the plot area when labels are long
+  const estimatedLabelPx = useMemo(() => {
+    const maxLabelLen = rows.reduce((m, r) => Math.max(m, (r.study || "").length), 0);
+    return Math.min(2000, Math.max(100, 12 + maxLabelLen * 9));
+  }, [rows]);
+
   // ----- CSV Parsing -----
   function parseCSV(file: File) {
     Papa.parse<Row>(file, {
@@ -54,19 +68,31 @@ export default function Home() {
         const parsed = results.data
           .map((r: Record<string, unknown>) => {
             const study = r.study ?? r.Study ?? r.name ?? r.Name ?? r.Studie ?? "";
-            const effect = r.effect ?? r.Effect ?? r.or ?? r.OR ?? r.value ?? r.ES ??  null;
-            const ci_low = r.ci_low ?? r.CI_low ?? r.ciLower ?? r.lower ?? r.Lower ?? r.Untere_KI ?? r.untere_KI ?? r.untere_ki ?? null;
-            const ci_high = r.ci_high ?? r.CI_high ?? r.ciUpper ?? r.upper ?? r.Upper ?? r.Obere_KI ?? r.obere_KI ?? r.obere_ki ?? null;
-            const weight = r.weight ?? r.Weight ?? null;
-            if (!study || effect == null || ci_low == null || ci_high == null) return null;
+
+            // Parse numeric fields if present, otherwise keep as null
+            const tryNum = (v: unknown) => {
+              if (v === null || v === undefined || v === "") return null;
+              const n = Number(v);
+              return Number.isFinite(n) ? n : null;
+            };
+
+            const effect = tryNum(r.effect ?? r.Effect ?? r.or ?? r.OR ?? r.value ?? r.ES ?? null);
+            const ci_low = tryNum(r.ci_low ?? r.CI_low ?? r.ciLower ?? r.lower ?? r.Lower ?? r.Untere_KI ?? r.untere_KI ?? r.untere_ki ?? null);
+            const ci_high = tryNum(r.ci_high ?? r.CI_high ?? r.ciUpper ?? r.upper ?? r.Upper ?? r.Obere_KI ?? r.obere_KI ?? r.obere_ki ?? null);
+            const weight = tryNum(r.weight ?? r.Weight ?? null);
+
+            // If no study present, skip the row entirely; otherwise keep the row even if numeric fields are missing
+            if (!study) return null;
+
             return {
               study: String(study),
-              effect: Number(effect),
-              ci_low: Number(ci_low),
-              ci_high: Number(ci_high),
-              weight: weight != null ? Number(weight) : undefined,
+              effect,
+              ci_low,
+              ci_high,
+              weight: weight != null ? weight : undefined,
             } as Row;
           })
+          // keep rows that have at least a study
           .filter(Boolean) as Row[];
         setRows(parsed);
       },
@@ -92,32 +118,44 @@ export default function Home() {
   }, []);
 
   // ----- Augment rows with SE and weight -----
-  const augmented = useMemo(() => {
+  const augmented = useMemo<AugRow[]>(() => {
     return rows.map((r) => {
-      if (r.weight != null) return { ...r, se: null as number | null, weightCalc: r.weight };
+      // If a weight column is provided, use it directly and mark that the row has a weight
+      if (r.weight != null) return { ...r, se: null as number | null, weightCalc: r.weight, hasWeight: true };
+
+      // If numeric values are missing, we can't compute SE or weight; mark hasWeight=false
+      if (r.effect == null || r.ci_low == null || r.ci_high == null) {
+        return { ...r, se: null as number | null, weightCalc: 0, hasWeight: false };
+      }
+
       const low = isRatio ? Math.max(1e-12, r.ci_low) : r.ci_low;
       const high = isRatio ? Math.max(1e-12, r.ci_high) : r.ci_high;
       const se = isRatio ? (Math.log(high) - Math.log(low)) / (2 * 1.96) : (high - low) / (2 * 1.96);
       const weightCalc = se > 0 ? 1 / (se * se) : 0;
-      return { ...r, se, weightCalc };
+      return { ...r, se, weightCalc, hasWeight: true };
     });
   }, [rows, isRatio]);
 
   // ----- Prepare Plotly data -----
   const plotData = useMemo<Data | null>(() => {
     if (augmented.length === 0) return null;
-    const x = augmented.map((r) => r.effect);
+
+    // x: keep null for rows that lack an effect so Plotly will not draw a marker
+    const x = augmented.map((r) => (r.effect != null ? r.effect : null));
+
+    const error_array = augmented.map((r) => (r.ci_high != null && r.effect != null ? r.ci_high - r.effect : null));
+    const error_arrayminus = augmented.map((r) => (r.effect != null && r.ci_low != null ? r.effect - r.ci_low : null));
 
     const error_x = {
       type: "data" as const,
       symmetric: false,
-      array: augmented.map((r) => r.ci_high - r.effect),
-      arrayminus: augmented.map((r) => r.effect - r.ci_low),
+      array: error_array,
+      arrayminus: error_arrayminus,
       thickness: 1.5,
       width: 0,
     };
 
-    const weights = augmented.map((r) => r.weightCalc ?? 0);
+    const weights = augmented.map((r) => (r.weightCalc ?? 0));
     const totalWeight = weights.reduce((a, b) => a + b, 0);
     const maxW = Math.max(...weights, 0.000001);
     const maxMarkerSize = 28;
@@ -134,7 +172,11 @@ export default function Home() {
       hoverinfo: "text",
       text: augmented.map((r) => {
         const pct = totalWeight === 0 ? 0 : ((r.weightCalc ?? 0) / totalWeight) * 100;
-        return `${r.study}<br>Effect: ${r.effect}<br>CI: [${r.ci_low}, ${r.ci_high}]<br>Weight: ${pct.toFixed(1)}%`;
+        const effectText = r.effect != null ? String(r.effect) : "";
+        const ciText = r.ci_low != null && r.ci_high != null ? `[${r.ci_low}, ${r.ci_high}]` : "";
+        const weightText = (!r.hasWeight || totalWeight === 0) ? "" : `Weight: ${pct.toFixed(1)}%`;
+        const parts = [r.study, effectText ? `Effect: ${effectText}` : "", ciText ? `CI: ${ciText}` : "", weightText].filter(Boolean);
+        return parts.join("<br>");
       }),
       showlegend: false,
     } as Data);
@@ -157,9 +199,10 @@ export default function Home() {
     let ticktext: string[] | undefined = undefined;
 
     if (isRatio) {
-      const allX = augmented.flatMap(r => [Math.max(1e-12, r.ci_low), Math.max(1e-12, r.ci_high), Math.max(1e-12, r.effect)]);
-      const xMin = Math.min(...allX);
-      const xMax = Math.max(...allX);
+      // Only include numeric x values when computing min/max
+      const allX = augmented.flatMap(r => [r.ci_low, r.ci_high, r.effect].filter((v): v is number => v != null && Number.isFinite(v)));
+      const xMin = allX.length ? Math.min(...allX) : 1;
+      const xMax = allX.length ? Math.max(...allX) : 1;
 
       const decadeMin = Math.floor(Math.log10(Math.max(xMin, 1e-12)));
       const decadeMax = Math.ceil(Math.log10(Math.max(xMax, 1e-12)));
@@ -262,8 +305,15 @@ export default function Home() {
       const parent = el.parentElement;
       const parentRect = parent ? parent.getBoundingClientRect() : { left: 0 };
       const parentLeft = parentRect.left;
-      const newMarginLeft = (winW - contentWidth) / 2 - parentLeft;
-      el.style.marginLeft = `${newMarginLeft}px`;
+      // Only center the content when it fits inside the window. If the content
+      // is wider than the viewport, leave marginLeft at 0 so the natural width
+      // can overflow and the browser horizontal scrollbar is used.
+      if (contentWidth <= winW) {
+        const newMarginLeft = (winW - contentWidth) / 2 - parentLeft;
+        el.style.marginLeft = `${newMarginLeft}px`;
+      } else {
+        el.style.marginLeft = `0px`;
+      }
     };
     handleResize();
     window.addEventListener("resize", handleResize);
@@ -383,8 +433,9 @@ export default function Home() {
         </div>
       </div>
 
-      <div style={{ width: "100%", display: "block", position: "relative" }}>
-        <div ref={dataWrapperRef} style={{ width: "max-content", marginLeft: 0 }}>
+      {/* Allow the data area to be wider than the viewport and let the browser scroll horizontally */}
+      <div style={{ width: "100%", display: "block", position: "relative", overflowX: 'auto', overflowY: 'visible' }}>
+        <div ref={dataWrapperRef} style={{ width: "max-content", marginLeft: 0, overflow: 'visible' }}>
           <Card>
             <CardHeader>
               <CardTitle>Data view</CardTitle>
@@ -402,24 +453,24 @@ export default function Home() {
                       <input
                         type="range"
                         min={30}
-                        max={100}
+                        max={300}
                         value={tableWidthPercent}
                         onChange={(e) => setTableWidthPercent(Number(e.target.value))}
                         className="w-72"
                       />
-                      <div className="text-sm w-12 text-right">{tableWidthPercent}%</div>
+                      <div className="text-sm w-16 text-right">{tableWidthPercent}%</div>
                     </div>
                     <div className="flex items-center gap-3">
                       <Label className="whitespace-nowrap w-28 text-right">Plot width</Label>
                       <input
                         type="range"
                         min={30}
-                        max={100}
+                        max={300}
                         value={plotWidthPercent}
                         onChange={(e) => setPlotWidthPercent(Number(e.target.value))}
                         className="w-72"
                       />
-                      <div className="text-sm w-12 text-right">{plotWidthPercent}%</div>
+                      <div className="text-sm w-16 text-right">{plotWidthPercent}%</div>
                     </div>
                   </div>
                   {/* align at top and offset the table so its center lines up with plot center */}
@@ -443,9 +494,9 @@ export default function Home() {
                                 <tr key={i} className="border-b last:border-b-0">
                                   {/* allow long study names to wrap inside the table cell */}
                                   <td className="py-2 pr-3 max-w-[250px] break-words">{r.study}</td>
-                                  <td className="py-2 text-right pr-3">{r.effect}</td>
-                                  <td className="py-2 text-right pr-3">[{r.ci_low}, {r.ci_high}]</td>
-                                  <td className="py-2 text-right pr-1">{((r.weightCalc ?? 0) / totalWeight * 100).toFixed(1)}%</td>
+                                  <td className="py-2 text-right pr-3">{r.effect != null ? r.effect : ""}</td>
+                                  <td className="py-2 text-right pr-3">{(r.ci_low != null && r.ci_high != null) ? `[${r.ci_low}, ${r.ci_high}]` : ""}</td>
+                                  <td className="py-2 text-right pr-1">{(totalWeight === 0 || !r.hasWeight) ? "" : ((r.weightCalc ?? 0) / totalWeight * 100).toFixed(1) + "%"}</td>
                                 </tr>
                               );
                             })}
@@ -455,7 +506,9 @@ export default function Home() {
                     </div>
 
                     {/* right column: full-width plot */}
-                    <div ref={plotWrapperRef} style={{ width: `${Math.max(300, Math.round(900 * (plotWidthPercent / 100)))}px` }}>
+                    {/* Allow the plot wrapper to grow based on label width and the plot width percent */}
+                    {/** Desired width grows with the slider but also ensures there's room for long study labels. */}
+                    <div ref={plotWrapperRef} style={{ width: `${Math.max(300, Math.round(Math.max(900 * (plotWidthPercent / 100), estimatedLabelPx + 600)))}px`, overflow: 'visible' }}>
                       <div className="flex items-center justify-end mb-2">
                         <Button size="sm" onClick={() => setFullOpen(true)}>Full screen</Button>
                       </div>
