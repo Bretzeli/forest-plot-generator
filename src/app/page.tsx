@@ -243,6 +243,7 @@ export default function Home() {
       try {
         ro.observe(plotWrap);
         ro.observe(wrapper);
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (e) {
         // ignore observe errors in older browsers
       }
@@ -252,6 +253,7 @@ export default function Home() {
       clearTimeout(t);
       window.removeEventListener('resize', alignRowCenter);
       if (ro) {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
         try { ro.disconnect(); } catch (e) {}
       }
     };
@@ -261,13 +263,13 @@ export default function Home() {
     // allow pages to be wider than the viewport so wide cards can overflow the
     // browser and the user can scroll horizontally at the browser level.
     <main className="w-full p-8">
-      <header className="mb-6">
+      <header className="mb-6 text-center">
         <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">Forest Plot Generator</h1>
         <p className="mt-2 text-muted-foreground text-sm">Create forest plots from a CSV.</p>
       </header>
 
-      <div className="grid grid-cols-1 gap-4 mb-6">
-        <div>
+      <div className="grid grid-cols-1 gap-4 mb-6 justify-items-center">
+        <div className="inline-block w-max">
           <Card>
             <CardHeader>
               <CardTitle>Upload CSV</CardTitle>
@@ -393,26 +395,28 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="mt-4">
-        <Card>
-          <CardContent>
-            <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 mt-1">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 1010 10A10 10 0 0012 2z" />
-                </svg>
-              </div>
-              <div>
-                <h4 className="font-medium mb-1">Tips</h4>
-                <ul className="text-sm space-y-1 list-inside list-disc">
-                  <li>For ratios (odds ratios, risk ratios, hazard ratios): keep <strong>&quot;Treat effects as ratios&quot;</strong> checked to pool on the log scale.</li>
-                  <li>For mean differences (0 = no effect): uncheck the ratio option.</li>
-                  <li>Optional <code>weight</code> column will be used directly if provided; otherwise weights are estimated from CIs.</li>
-                </ul>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="mt-4 flex justify-center">
+        <div className="inline-block w-max">
+          <Card>
+            <CardContent>
+             <div className="flex items-start gap-3">
+               <div className="flex-shrink-0 mt-1">
+                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 1010 10A10 10 0 0012 2z" />
+                 </svg>
+               </div>
+               <div>
+                 <h4 className="font-medium mb-1">Tips</h4>
+                 <ul className="text-sm space-y-1 list-inside list-disc">
+                   <li>For ratios (odds ratios, risk ratios, hazard ratios): keep <strong>&quot;Treat effects as ratios&quot;</strong> checked to pool on the log scale.</li>
+                   <li>For mean differences (0 = no effect): uncheck the ratio option.</li>
+                   <li>Optional <code>weight</code> column will be used directly if provided; otherwise weights are estimated from CIs.</li>
+                 </ul>
+               </div>
+             </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       {/* Fullscreen overlay for plot */}
