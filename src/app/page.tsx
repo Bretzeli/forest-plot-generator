@@ -38,6 +38,10 @@ export default function Home() {
   const tableRef = useRef<HTMLDivElement>(null);
   const plotWrapperRef = useRef<HTMLDivElement>(null);
 
+  // Slider states: percentages (default 100 to keep current size)
+  const [tableWidthPercent, setTableWidthPercent] = useState<number>(100);
+  const [plotWidthPercent, setPlotWidthPercent] = useState<number>(100);
+
   // ----- CSV Parsing -----
   function parseCSV(file: File) {
     Papa.parse<Row>(file, {
@@ -100,8 +104,6 @@ export default function Home() {
   // ----- Prepare Plotly data -----
   const plotData = useMemo<Data | null>(() => {
     if (augmented.length === 0) return null;
-    // map studies to y positions 1..N so the bottom-most study sits at y=1
-    const y = augmented.map((_, i) => augmented.length - i);
     const x = augmented.map((r) => r.effect);
 
     const error_x = {
@@ -116,14 +118,13 @@ export default function Home() {
     const weights = augmented.map((r) => r.weightCalc ?? 0);
     const totalWeight = weights.reduce((a, b) => a + b, 0);
     const maxW = Math.max(...weights, 0.000001);
-    // Make diamonds smaller but keep them proportional to weights.
-    const maxMarkerSize = 28; // previously used 40; reduce for smaller diamonds
+    const maxMarkerSize = 28;
     const minMarkerSize = 6;
     const markerSizes = weights.map((w) => (w / maxW) * maxMarkerSize + minMarkerSize);
 
     return ({
       x,
-      y,
+      y: augmented.map((_, i) => augmented.length - i),
       mode: "markers" as const,
       marker: { symbol: "diamond", size: markerSizes, line: { width: 1 } },
       error_x,
@@ -140,39 +141,30 @@ export default function Home() {
   // ----- Compute Plot layout -----
   const layout = useMemo<Partial<Layout>>(() => {
     if (augmented.length === 0) return {};
-    // set y axis range to 0..N+1 so studies at y=1..N sit above the axis (bottom study at y=1)
     const yMin = 0;
     const yMax = augmented.length + 1;
-    const desiredAxisY = yMin; // place x-axis at the bottom of the plot area
-    const denom = yMax - yMin || 1; // guard against single-item charts
+    const desiredAxisY = yMin;
+    const denom = yMax - yMin || 1;
     const axisPosition = (desiredAxisY - yMin) / denom;
 
-    // compute left margin from longest study label so plot area is centered and labels fit
     const maxLabelLen = augmented.reduce((m, r) => Math.max(m, (r.study || "").length), 0);
-    // approx pixels per char; clamp to reasonable range (prevent excessive left padding)
-    // increase cap so very long study names get enough space and don't get clipped
     const estimatedLabelPx = Math.min(600, Math.max(100, 12 + maxLabelLen * 8));
     const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
-    // Build custom tick values/text for log scale so small ratios look like `.3`, `.4`, etc
     let tickvals: number[] | undefined = undefined;
     let ticktext: string[] | undefined = undefined;
 
     if (isRatio) {
-      // determine x range from effect CIs (safeguard to positive numbers)
       const allX = augmented.flatMap(r => [Math.max(1e-12, r.ci_low), Math.max(1e-12, r.ci_high), Math.max(1e-12, r.effect)]);
       const xMin = Math.min(...allX);
       const xMax = Math.max(...allX);
 
-      // compute decades
       const decadeMin = Math.floor(Math.log10(Math.max(xMin, 1e-12)));
       const decadeMax = Math.ceil(Math.log10(Math.max(xMax, 1e-12)));
 
-      // candidate mantissas
       const mantissasFull = [1,2,3,4,5,6,7,8,9];
       const mantissasReduced = [1,2,5];
 
-      // try full mantissas first
       let candidates: number[] = [];
       for (let d = decadeMin; d <= decadeMax; d++) {
         for (const m of mantissasFull) {
@@ -180,10 +172,8 @@ export default function Home() {
         }
       }
 
-      // filter to range
       candidates = candidates.filter(v => v >= xMin && v <= xMax);
 
-      // if too many ticks, use reduced mantissas and recompute
       const maxTicks = 12;
       if (candidates.length > maxTicks) {
         candidates = [];
@@ -195,9 +185,7 @@ export default function Home() {
         candidates = candidates.filter(v => v >= xMin && v <= xMax);
       }
 
-      // if still empty (e.g., all values inside single mantissa), fall back to a few nice ticks
       if (candidates.length === 0) {
-        // produce a linear-like set between xMin and xMax (log spacing)
         const steps = Math.min(6, Math.max(2, Math.ceil((xMax / xMin))));
         const logMin = Math.log10(xMin);
         const logMax = Math.log10(xMax);
@@ -207,13 +195,10 @@ export default function Home() {
         }
       }
 
-      // format labels: for values < 1 remove leading zero (0.3 -> .3). Choose decimals by magnitude.
       const fmtVal = (v: number) => {
         if (v >= 1) {
-          // show integers without decimal when possible, otherwise 1 decimal
           return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(1)));
         }
-        // for v < 1 choose 1 decimal for >=0.1 otherwise 2 decimals for smaller numbers
         const prec = v >= 0.1 ? 1 : 2;
         return v.toFixed(prec).replace(/^0(?=\.)/, '');
       };
@@ -232,7 +217,6 @@ export default function Home() {
         tickpadding: 2,
         ticklen: 6,
         position: Math.max(0, Math.min(1, axisPosition)),
-        // when we computed tickvals/ticktext for log scale, expose them so labels render as desired
         ...(tickvals ? { tickmode: 'array' as const, tickvals, ticktext } : {}),
       },
       yaxis: {
@@ -257,10 +241,8 @@ export default function Home() {
     };
   }, [augmented, isRatio, xLabel]);
 
-  // expose computed plotHeight for use in style on the Plot component
   const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
-  // Center the data view wrapper (inner part) in the full-width container
   useEffect(() => {
     const el = dataWrapperRef.current;
     if (!el) return;
@@ -270,8 +252,6 @@ export default function Home() {
       const parent = el.parentElement;
       const parentRect = parent ? parent.getBoundingClientRect() : { left: 0 };
       const parentLeft = parentRect.left;
-      // Compute margin so the content's center aligns with the viewport center,
-      // taking into account the parent's left offset within the viewport.
       const newMarginLeft = (winW - contentWidth) / 2 - parentLeft;
       el.style.marginLeft = `${newMarginLeft}px`;
     };
@@ -280,7 +260,6 @@ export default function Home() {
     return () => window.removeEventListener("resize", handleResize);
   }, [augmented]);
 
-  // Align the table's row-center (tbody center) to the plot's center line
   useEffect(() => {
     const wrapper = tableRef.current;
     const plotWrap = plotWrapperRef.current;
@@ -292,19 +271,15 @@ export default function Home() {
       const headerH = thead ? thead.offsetHeight : 0;
       const tbodyH = tbody ? tbody.offsetHeight : 0;
       const plotH = plotWrap!.clientHeight || plotHeight;
-      // Desired top offset so that header + tbody/2 sits at plotH/2
       const desiredTop = plotH / 2 - (headerH + tbodyH / 2);
       const marginTop = Math.max(0, Math.round(desiredTop));
       wrapper!.style.marginTop = `${marginTop}px`;
     }
 
     alignRowCenter();
-    // recompute after a short timeout in case plot resizes content after render
     const t = setTimeout(alignRowCenter, 250);
     window.addEventListener('resize', alignRowCenter);
 
-    // Use ResizeObserver to detect dynamic size changes of the plot or table
-    // and realign immediately. This is more robust than relying only on timeouts.
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined') {
       ro = new ResizeObserver(() => {
@@ -315,7 +290,7 @@ export default function Home() {
         ro.observe(wrapper);
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (e) {
-        // ignore observe errors in older browsers
+        // ignore
       }
     }
 
@@ -330,8 +305,6 @@ export default function Home() {
   }, [augmented, plotHeight]);
 
   return (
-    // allow pages to be wider than the viewport so wide cards can overflow the
-    // browser and the user can scroll horizontally at the browser level.
     <main className="w-full p-8">
       <header className="mb-6 text-center">
         <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">Forest Plot Generator</h1>
@@ -393,12 +366,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Render Data view AFTER the grid so it's not constrained by the grid/container */}
-      {/* Use a full-viewport-width flex container to center the inner max-content
-          wrapper. This ensures centering relative to the viewport while the inner
-          wrapper can be wider than the viewport (causing browser horizontal scroll). */}
-      {/* Full-width wrapper (inside main). The inner wrapper is positioned via JS
-          so its center aligns with the viewport center (accounts for main padding). */}
       <div style={{ width: "100%", display: "block", position: "relative" }}>
         <div ref={dataWrapperRef} style={{ width: "max-content", marginLeft: 0 }}>
           <Card>
@@ -411,53 +378,83 @@ export default function Home() {
                 <div className="mt-3 text-sm text-muted-foreground">No data yet. Upload a CSV to begin.</div>
               ) : (
                 <div className="mt-3">
+                  {/* Slider controls for table/plot width - default 100% */}
+                  <div className="mb-3 flex flex-col gap-2">
+                    <div className="flex items-center gap-3">
+                      <Label className="whitespace-nowrap w-28 text-right">Table width</Label>
+                      <input
+                        type="range"
+                        min={30}
+                        max={100}
+                        value={tableWidthPercent}
+                        onChange={(e) => setTableWidthPercent(Number(e.target.value))}
+                        className="w-72"
+                      />
+                      <div className="text-sm w-12 text-right">{tableWidthPercent}%</div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Label className="whitespace-nowrap w-28 text-right">Plot width</Label>
+                      <input
+                        type="range"
+                        min={30}
+                        max={100}
+                        value={plotWidthPercent}
+                        onChange={(e) => setPlotWidthPercent(Number(e.target.value))}
+                        className="w-72"
+                      />
+                      <div className="text-sm w-12 text-right">{plotWidthPercent}%</div>
+                    </div>
+                  </div>
                   {/* align at top and offset the table so its center lines up with plot center */}
                   <div className="inline-flex items-start gap-6">
-                     {/* left column: full table (no internal scrolling) */}
-                     <div ref={tableRef} className="flex-shrink-0">
-                       <table className="text-sm table-auto whitespace-nowrap min-w-[600px]">
-                         <thead>
-                           <tr className="text-left text-xs text-muted-foreground">
-                             <th className="pb-2">Study</th>
-                             <th className="pb-2 text-right">Effect</th>
-                             <th className="pb-2 text-right">CI</th>
-                             <th className="pb-2 text-right">Weight</th>
-                           </tr>
-                         </thead>
-                         <tbody>
-                           {augmented.map((r, i) => {
-                             const totalWeight = augmented.reduce((a, b) => a + (b.weightCalc ?? 0), 0);
-                             return (
-                               <tr key={i} className="border-b last:border-b-0">
-                                 <td className="py-2 pr-3">{r.study}</td>
-                                 <td className="py-2 text-right pr-3">{r.effect}</td>
-                                 <td className="py-2 text-right pr-3">[{r.ci_low}, {r.ci_high}]</td>
-                                 <td className="py-2 text-right pr-1">{((r.weightCalc ?? 0) / totalWeight * 100).toFixed(1)}%</td>
-                               </tr>
-                             );
-                           })}
-                         </tbody>
-                       </table>
-                     </div>
+                    {/* left column: full table (no internal scrolling) */}
+                    <div ref={tableRef} className="flex-shrink-0" style={{ width: `${Math.max(200, Math.round(600 * (tableWidthPercent / 100)))}px` }}>
+                      <div style={{ width: '100%' }}>
+                        <table className="text-sm table-fixed w-full">
+                          <thead>
+                            <tr className="text-left text-xs text-muted-foreground">
+                              <th className="pb-2">Study</th>
+                              <th className="pb-2 text-right">Effect</th>
+                              <th className="pb-2 text-right">CI</th>
+                              <th className="pb-2 text-right">Weight</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {augmented.map((r, i) => {
+                              const totalWeight = augmented.reduce((a, b) => a + (b.weightCalc ?? 0), 0);
+                              return (
+                                <tr key={i} className="border-b last:border-b-0">
+                                  {/* allow long study names to wrap inside the table cell */}
+                                  <td className="py-2 pr-3 max-w-[250px] break-words">{r.study}</td>
+                                  <td className="py-2 text-right pr-3">{r.effect}</td>
+                                  <td className="py-2 text-right pr-3">[{r.ci_low}, {r.ci_high}]</td>
+                                  <td className="py-2 text-right pr-1">{((r.weightCalc ?? 0) / totalWeight * 100).toFixed(1)}%</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
 
-                     {/* right column: full-width plot */}
-                     <div ref={plotWrapperRef} style={{ minWidth: 900 }}>
-                       <div className="flex items-center justify-end mb-2">
-                         <Button size="sm" onClick={() => setFullOpen(true)}>Full screen</Button>
-                       </div>
-                       {plotData && (
-                         <div style={{ minWidth: 900 }}>
-                           <Plot
-                             data={[plotData] as Data[]}
-                             layout={layout}
-                             useResizeHandler={true}
-                             style={{ width: "100%", height: plotHeight }}
-                             config={{ responsive: true }}
-                           />
-                         </div>
-                       )}
-                     </div>
-                   </div>
+                    {/* right column: full-width plot */}
+                    <div ref={plotWrapperRef} style={{ width: `${Math.max(300, Math.round(900 * (plotWidthPercent / 100)))}px` }}>
+                      <div className="flex items-center justify-end mb-2">
+                        <Button size="sm" onClick={() => setFullOpen(true)}>Full screen</Button>
+                      </div>
+                      {plotData && (
+                        <div style={{ width: '100%' }}>
+                          <Plot
+                            data={[plotData] as Data[]}
+                            layout={layout}
+                            useResizeHandler={true}
+                            style={{ width: "100%", height: plotHeight }}
+                            config={{ responsive: true }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -469,21 +466,21 @@ export default function Home() {
         <div className="inline-block w-max">
           <Card>
             <CardContent>
-             <div className="flex items-start gap-3">
-               <div className="flex-shrink-0 mt-1">
-                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 1010 10A10 10 0 0012 2z" />
-                 </svg>
-               </div>
-               <div>
-                 <h4 className="font-medium mb-1">Tips</h4>
-                 <ul className="text-sm space-y-1 list-inside list-disc">
-                   <li>For ratios (odds ratios, risk ratios, hazard ratios): keep <strong>&quot;Treat effects as ratios&quot;</strong> checked to pool on the log scale.</li>
-                   <li>For mean differences (0 = no effect): uncheck the ratio option.</li>
-                   <li>Optional <code>weight</code> column will be used directly if provided; otherwise weights are estimated from CIs.</li>
-                 </ul>
-               </div>
-             </div>
+              <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 mt-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 1010 10A10 10 0 0012 2z" />
+                  </svg>
+                </div>
+                <div>
+                  <h4 className="font-medium mb-1">Tips</h4>
+                  <ul className="text-sm space-y-1 list-inside list-disc">
+                    <li>For ratios (odds ratios, risk ratios, hazard ratios): keep <strong>&quot;Treat effects as ratios&quot;</strong> checked to pool on the log scale.</li>
+                    <li>For mean differences (0 = no effect): uncheck the ratio option.</li>
+                    <li>Optional <code>weight</code> column will be used directly if provided; otherwise weights are estimated from CIs.</li>
+                  </ul>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>
