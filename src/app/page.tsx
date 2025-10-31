@@ -25,6 +25,8 @@ import {
   ColorPickerFormat,
   ColorPickerOutput,
 } from "@/components/ui/shadcn-io/color-picker";
+import { useTheme } from "next-themes";
+import { ThemeToggleButton } from "@/components/ui/shadcn-io/theme-toggle-button";
 
 // Load Plotly and the react-plotly factory only on the client to avoid server-side
 // evaluation of `plotly.js-basic-dist` (which references `self`/`window`).
@@ -51,6 +53,12 @@ type AugRow = Row & {
 };
 
 export default function Home() {
+  const { theme, setTheme } = useTheme();
+  const handleThemeToggle = () => {
+    // Toggle between 'dark' and 'light'. If theme is 'system' or undefined, treat non-'dark' as light.
+    const current = theme ?? 'light';
+    setTheme(current === 'dark' ? 'light' : 'dark');
+  };
   const [rows, setRows] = useState<Row[]>([]);
   const [isRatio, setIsRatio] = useState(true);
   // Mirror x-axis (e.g. show 5 -> 0.1 instead of 0.1 -> 5)
@@ -508,9 +516,17 @@ export default function Home() {
 
   return (
     <main className="w-full p-8">
-      <header className="mb-6 text-center">
-        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">Forest Plot Generator</h1>
-        <p className="mt-2 text-muted-foreground text-sm">Create forest plots from a CSV.</p>
+      <header className="mb-6 relative">
+        {/* Theme toggle placed top-right, vertically centered to the header (matches headline) */}
+        <div className="absolute right-4 top-1/2 -translate-y-1/2">
+          <ThemeToggleButton
+            theme={theme === 'dark' ? 'dark' : 'light'}
+            onClick={handleThemeToggle}
+            aria-label="Toggle dark mode"
+          />
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-center">Forest Plot Generator</h1>
+        <p className="mt-2 text-muted-foreground text-sm text-center">Create forest plots from a CSV.</p>
       </header>
 
       <div className="grid grid-cols-1 gap-4 mb-6 justify-items-center">
