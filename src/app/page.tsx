@@ -28,8 +28,8 @@ import {
 import { useTheme } from "next-themes";
 import { ThemeToggleButton } from "@/components/ui/shadcn-io/theme-toggle-button";
 
-// Load Plotly and the react-plotly factory only on the client to avoid server-side
-// evaluation of `plotly.js-basic-dist` (which references `self`/`window`).
+// Load Plotly and the react-plotly factory only on the client
+// to avoid server-side evaluation (Plotly references window/self).
 const Plot = dynamic(async () => {
   const Plotly = await import("plotly.js-basic-dist");
   const factory = (await import("react-plotly.js/factory")).default;
@@ -38,14 +38,14 @@ const Plot = dynamic(async () => {
 
 type Row = {
   study: string;
-  // numeric fields can be missing for rows that only contain a study name
+  // Numeric fields may be absent for rows that contain only a study name.
   effect?: number | null;
   ci_low?: number | null;
   ci_high?: number | null;
   weight?: number | null;
 };
 
-// Augmented row used internally: includes computed SE, computed weight and a flag
+// Augmented row used internally: includes computed standard error, computed weight and a flag.
 type AugRow = Row & {
   se: number | null;
   weightCalc: number;
@@ -55,41 +55,40 @@ type AugRow = Row & {
 export default function Home() {
   const { theme, setTheme } = useTheme();
   const handleThemeToggle = () => {
-    // Toggle between 'dark' and 'light'. If theme is 'system' or undefined, treat non-'dark' as light.
+    // Toggle between 'dark' and 'light'. Treat undefined as 'light'.
     const current = theme ?? 'light';
     setTheme(current === 'dark' ? 'light' : 'dark');
   };
   const [rows, setRows] = useState<Row[]>([]);
   const [isRatio, setIsRatio] = useState(true);
-  // Mirror x-axis (e.g. show 5 -> 0.1 instead of 0.1 -> 5)
+  // When true, display x-axis values in descending order (high -> low).
   const [mirrorX, setMirrorX] = useState(false);
-  // Show grid lines on the plot (default true)
+  // Controls visibility of grid lines on the plot.
   const [showGrid, setShowGrid] = useState(true);
   const [xLabel, setXLabel] = useState("Effect");
-  // track uploaded files so Dropzone can show content
+  // Track uploaded file(s) so the Dropzone can display the selection.
   const [uploadedFiles, setUploadedFiles] = useState<File[] | undefined>(undefined);
-  // Fullscreen state and viewport height for fullscreen plot
+  // Fullscreen state and viewport-derived height for the fullscreen plot.
   const [fullOpen, setFullOpen] = useState(false);
   const [fullHeight, setFullHeight] = useState<number>(() => Math.max(600, typeof window !== "undefined" ? window.innerHeight - 120 : 600));
   const dataWrapperRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   const plotWrapperRef = useRef<HTMLDivElement>(null);
 
-  // Slider states: percentages (default 100 to keep current size)
+  // Slider states expressed as percentages (100 = default size).
   const [tableWidthPercent, setTableWidthPercent] = useState<number>(100);
   const [plotWidthPercent, setPlotWidthPercent] = useState<number>(100);
-  // Diamond size multiplier (1 = current default). Scales all marker sizes while keeping proportions.
+  // Diamond size multiplier (1 = baseline). Scales marker sizes uniformly.
   const [diamondScale, setDiamondScale] = useState<number>(1);
 
-  // Color states: diamond fill color and connecting line color
-  // make default slightly transparent (about 20% less opaque)
-  const [diamondColor, setDiamondColor] = useState<string>("rgba(59,130,246,0.8)"); // default blue, 80% opacity
-  // axis color controls the vertical reference line (e.g. x=1)
-  const [axisColor, setAxisColor] = useState<string>("rgba(0,0,0,0.3)"); // default soft black used previously
-  // ciColor controls the error/CI lines for each study (separate from diamond fill)
+  // Color states. Defaults use semi-transparent values.
+  const [diamondColor, setDiamondColor] = useState<string>("rgba(59,130,246,0.8)");
+  // Color used for the axis.
+  const [axisColor, setAxisColor] = useState<string>("rgba(0,0,0,0.3)");
+  // Color used for CI lines (independent of diamond fill color and opacity).
   const [ciColor, setCiColor] = useState<string>("rgba(59,130,246,0.8)");
 
-  // Estimate label pixel width so we can expand the plot area when labels are long
+  // Estimate pixel width required by study labels to reserve left margin on the plot.
   const estimatedLabelPx = useMemo(() => {
     const maxLabelLen = rows.reduce((m, r) => Math.max(m, (r.study || "").length), 0);
     return Math.min(2000, Math.max(100, 12 + maxLabelLen * 9));
@@ -106,7 +105,7 @@ export default function Home() {
           .map((r: Record<string, unknown>) => {
             const study = r.study ?? r.Study ?? r.name ?? r.Name ?? r.Studie ?? "";
 
-            // Parse numeric fields if present, otherwise keep as null
+            // Parse numeric fields: return null for empty/non-finite values.
             const tryNum = (v: unknown) => {
               if (v === null || v === undefined || v === "") return null;
               const n = Number(v);
@@ -118,7 +117,7 @@ export default function Home() {
             const ci_high = tryNum(r.ci_high ?? r.CI_high ?? r.ciUpper ?? r.upper ?? r.Upper ?? r.Obere_KI ?? r.obere_KI ?? r.obere_ki ?? null);
             const weight = tryNum(r.weight ?? r.Weight ?? null);
 
-            // If no study present, skip the row entirely; otherwise keep the row even if numeric fields are missing
+            // Skip rows that do not include a study name. Keep rows missing numeric values.
             if (!study) return null;
 
             return {
@@ -129,7 +128,7 @@ export default function Home() {
               weight: weight != null ? weight : undefined,
             } as Row;
           })
-          // keep rows that have at least a study
+          // Keep only rows that include a study name.
           .filter(Boolean) as Row[];
         setRows(parsed);
       },
@@ -137,7 +136,7 @@ export default function Home() {
     });
   }
 
-  // Keep fullscreen height in sync with window size
+  // Synchronize fullscreen height with window size and close overlay on Escape.
   useEffect(() => {
     function update() {
       setFullHeight(Math.max(400, window.innerHeight - 120));
@@ -155,12 +154,13 @@ export default function Home() {
   }, []);
 
   // ----- Augment rows with SE and weight -----
+  // Compute standard errors from CIs for ratio or difference measures, and derive weights.
   const augmented = useMemo<AugRow[]>(() => {
     return rows.map((r) => {
-      // If a weight column is provided, use it directly and mark that the row has a weight
+      // Use provided weight column if present.
       if (r.weight != null) return { ...r, se: null as number | null, weightCalc: r.weight, hasWeight: true };
 
-      // If numeric values are missing, we can't compute SE or weight; mark hasWeight=false
+      // If required numeric fields are missing, mark as having no weight.
       if (r.effect == null || r.ci_low == null || r.ci_high == null) {
         return { ...r, se: null as number | null, weightCalc: 0, hasWeight: false };
       }
@@ -173,7 +173,7 @@ export default function Home() {
     });
   }, [rows, isRatio]);
 
-  // ----- Prepare Plotly data (two traces: CI lines + diamond markers) -----
+  // ----- Prepare Plotly data (CI lines and diamond markers) -----
   const plotData = useMemo<Data[] | null>(() => {
     if (augmented.length === 0) return null;
 
@@ -184,7 +184,7 @@ export default function Home() {
     const minMarkerSize = 6;
     const markerSizes = weights.map((w) => ((w / maxW) * maxMarkerSize + minMarkerSize) * diamondScale);
 
-    // Parse diamondColor into rgb + opacity so markers don't force CI alpha changes.
+    // Extract RGB and alpha from diamondColor so marker fill opacity can be applied separately from CI lines.
     let markerColorRgb = diamondColor;
     let markerOpacity = 1;
     try {
@@ -202,7 +202,7 @@ export default function Home() {
       markerOpacity = 1;
     }
 
-    // Build CI line trace: use null separators so each study's CI is a separate segment.
+    // Construct CI line trace. Null entries separate segments per study.
     const xLine: (number | null)[] = [];
     const yLine: (number | null)[] = [];
     augmented.forEach((r, i) => {
@@ -211,7 +211,7 @@ export default function Home() {
         xLine.push(r.ci_low, r.ci_high, null);
         yLine.push(yPos, yPos, null);
       } else {
-        // push a null separator to keep segments aligned
+        // Null separator to maintain alignment when CI is missing.
         xLine.push(null);
         yLine.push(null);
       }
@@ -227,7 +227,7 @@ export default function Home() {
       showlegend: false,
     } as Data;
 
-    // Marker trace (diamonds)
+    // Marker trace (diamonds) with per-row hover text and sizes derived from weights.
     const x = augmented.map((r) => (r.effect != null ? r.effect : null));
     const y = augmented.map((_, i) => augmented.length - i);
 
@@ -252,7 +252,7 @@ export default function Home() {
     return [ciTrace, markerTrace];
   }, [augmented, diamondScale, diamondColor, ciColor]);
 
-  // ----- Compute Plot layout -----
+  // ----- Compute Plot layout (axes, ticks, margins, shapes) -----
   const layout = useMemo<Partial<Layout>>(() => {
     if (augmented.length === 0) return {};
     const yMin = 0;
@@ -269,7 +269,7 @@ export default function Home() {
     let ticktext: string[] | undefined = undefined;
 
     if (isRatio) {
-      // Only include numeric x values when computing min/max
+      // Gather numeric x-values present in the data for log-scale tick computation.
       const allX = augmented.flatMap(r => [r.ci_low, r.ci_high, r.effect].filter((v): v is number => v != null && Number.isFinite(v)));
       const xMin = allX.length ? Math.min(...allX) : 1;
       const xMax = allX.length ? Math.max(...allX) : 1;
@@ -280,6 +280,7 @@ export default function Home() {
       const mantissasFull = [1,2,3,4,5,6,7,8,9];
       const mantissasReduced = [1,2,5];
 
+      // Build candidate tick values by mantissa * 10^decade, then filter to range.
       let candidates: number[] = [];
       for (let d = decadeMin; d <= decadeMax; d++) {
         for (const m of mantissasFull) {
@@ -289,6 +290,7 @@ export default function Home() {
 
       candidates = candidates.filter(v => v >= xMin && v <= xMax);
 
+      // Reduce mantissas if there are too many ticks.
       const maxTicks = 12;
       if (candidates.length > maxTicks) {
         candidates = [];
@@ -300,6 +302,7 @@ export default function Home() {
         candidates = candidates.filter(v => v >= xMin && v <= xMax);
       }
 
+      // Fallback: generate evenly spaced values on the log scale.
       if (candidates.length === 0) {
         const steps = Math.min(6, Math.max(2, Math.ceil((xMax / xMin))));
         const logMin = Math.log10(xMin);
@@ -322,7 +325,7 @@ export default function Home() {
       ticktext = candidates.map(fmtVal);
     }
 
-    // If mirrorX is enabled, flip the tick arrays so labels read from high → low
+    // When mirrorX is enabled, reverse tick value and text arrays so labels read high -> low.
     if (mirrorX && tickvals && ticktext) {
       tickvals = [...tickvals].reverse();
       ticktext = [...ticktext].reverse();
@@ -340,7 +343,7 @@ export default function Home() {
         tickpadding: 2,
         ticklen: 6,
         position: Math.max(0, Math.min(1, axisPosition)),
-        // When mirrorX is true we ask Plotly to reverse the axis so numbers display high→low
+        // When mirrorX is true request reversed autorange so displayed numbers read high->low.
         ...(mirrorX ? { autorange: 'reversed' as const } : {}),
         ...(tickvals ? { tickmode: 'array' as const, tickvals, ticktext } : {}),
       },
@@ -370,19 +373,17 @@ export default function Home() {
 
   const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
-  // Generate a key for the Plot component so it will remount when layout-affecting
-  // options change. Remounting forces Plotly to recompute axis ticks properly
-  // (this mirrors the fix observed when opening fullscreen).
+  // Generate a key for the Plot component so it remounts when layout-affecting options change.
+  // Forcing a remount ensures Plotly recomputes ticks and margins correctly.
   const plotKey = useMemo(() => {
     return `p-${showGrid ? 1 : 0}-${isRatio ? 1 : 0}-${mirrorX ? 1 : 0}-${Math.round(diamondScale*10)}-${plotWidthPercent}-${estimatedLabelPx}`;
   }, [showGrid, isRatio, mirrorX, diamondScale, plotWidthPercent, estimatedLabelPx]);
 
-  // Keep refs to the Plotly instances/graphDivs so we can call relayout/resize
-  // when toggling options that Plotly sometimes doesn't recalc correctly in-place.
+  // Store references to Plotly instances/figures for programmatic relayout and resize calls.
   const mainPlotRef = useRef<{ plotly: unknown; gd: unknown } | null>(null);
   const fullPlotRef = useRef<{ plotly: unknown; gd: unknown } | null>(null);
 
-  // ColorPicker now emits a normalized rgba string like 'rgba(255, 0, 0, 1)'
+  // Handlers for color pickers: set corresponding color state when provided.
   const handleDiamondColorChange = (v: string) => {
     if (v) setDiamondColor(v);
   };
@@ -395,8 +396,7 @@ export default function Home() {
     if (v) setAxisColor(v);
   };
 
-  // Minimal type describing the Plotly subset we call at runtime. Use unknown
-  // for inputs/outputs to avoid using `any` and satisfy lint rules.
+  // Minimal interface for Plotly methods that are invoked at runtime.
   type PlotlyLike = {
     relayout?: (gd: unknown, update: Record<string, unknown>) => void;
     Plots?: { resize?: (gd: unknown) => void } | undefined;
@@ -412,9 +412,7 @@ export default function Home() {
       const parent = el.parentElement;
       const parentRect = parent ? parent.getBoundingClientRect() : { left: 0 };
       const parentLeft = parentRect.left;
-      // Only center the content when it fits inside the window. If the content
-      // is wider than the viewport, leave marginLeft at 0 so the natural width
-      // can overflow and the browser horizontal scrollbar is used.
+      // Center content horizontally when it fits the viewport; otherwise allow natural overflow.
       if (contentWidth <= winW) {
         const newMarginLeft = (winW - contentWidth) / 2 - parentLeft;
         el.style.marginLeft = `${newMarginLeft}px`;
@@ -427,35 +425,30 @@ export default function Home() {
     return () => window.removeEventListener("resize", handleResize);
   }, [augmented]);
 
-  // When showGrid toggles, Plotly sometimes doesn't recompute tick placement
-  // properly in-place. Dispatch a window resize shortly after toggling so
-  // Plotly recalculates layout/ticks. This mirrors how opening fullscreen
-  // forces a layout pass and fixes the jumbled labels.
+  // When grid visibility changes, request layout/resize updates from the browser and Plotly
+  // so tick placement and grid rendering are recalculated reliably.
   useEffect(() => {
-    // trigger two resize events with a slight delay to ensure Plotly reacts
+    // Dispatch two resize events with slight delays to give Plotly time to react.
     const t1 = setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
     const t2 = setTimeout(() => window.dispatchEvent(new Event('resize')), 300);
 
-    // Also instruct Plotly directly to relayout/showgrid and resize. We attempt
-    // a couple of delayed calls to handle timing when the plot updates/remounts.
+    // Attempt to call Plotly relayout/resize where available.
     const tryRelayout = (ref: { plotly: unknown; gd: unknown } | null) => {
       if (!ref || !ref.plotly || !ref.gd) return;
       try {
-        // Narrow unknown to a small Plotly-like interface we can call safely.
+        // Cast to the small PlotlyLike interface and call methods if present.
         const plotly = ref.plotly as PlotlyLike;
         const gd = ref.gd;
-        // update grid visibility explicitly
         if (typeof plotly.relayout === 'function') {
           plotly.relayout(gd, { 'xaxis.showgrid': showGrid, 'yaxis.showgrid': showGrid });
         }
-        // force a resize/layout pass
         if (plotly.Plots && typeof plotly.Plots.resize === 'function') {
           plotly.Plots.resize(gd);
         } else if (typeof plotly.resize === 'function') {
           plotly.resize(gd);
         }
       } catch {
-        // ignore; best-effort
+        // Best-effort; ignore failures.
       }
     };
 
@@ -475,6 +468,7 @@ export default function Home() {
     const plotWrap = plotWrapperRef.current;
     if (!wrapper || !plotWrap) return;
 
+    // Align the table vertically so its center matches the plot center.
     function alignRowCenter() {
       const thead = wrapper!.querySelector('thead') as HTMLElement | null;
       const tbody = wrapper!.querySelector('tbody') as HTMLElement | null;
@@ -500,7 +494,7 @@ export default function Home() {
         ro.observe(wrapper);
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (e) {
-        // ignore
+        // Ignore observation errors.
       }
     }
 
@@ -517,7 +511,7 @@ export default function Home() {
   return (
     <main className="w-full p-8">
       <header className="mb-6 relative">
-        {/* Theme toggle placed top-right, vertically centered to the header (matches headline) */}
+        {/* Theme toggle button positioned top-right. */}
         <div className="absolute right-4 top-1/2 -translate-y-1/2">
           <ThemeToggleButton
             theme={theme === 'dark' ? 'dark' : 'light'}
@@ -593,7 +587,7 @@ export default function Home() {
                   <Label className="mb-1 block">Diamond color</Label>
                   <Popover>
                     <PopoverTrigger asChild>
-                      {/* asChild makes the child element the actual trigger to avoid nested buttons */}
+                      {/* asChild makes the child element the Popover trigger to avoid nested buttons */}
                      <Button variant="outline" size="sm" style={{ background: diamondColor, borderColor: '#e2e8f0' }}>
                         <span className="sr-only">Open diamond color picker</span>
                         <div style={{ width: 18, height: 18, borderRadius: 4 }} />
@@ -691,7 +685,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Allow the data area to be wider than the viewport and let the browser scroll horizontally */}
+      {/* Allow the data area to be wider than the viewport and let the browser scroll horizontally. */}
       <div style={{ width: "100%", display: "block", position: "relative", overflowX: 'auto', overflowY: 'visible' }}>
         <div ref={dataWrapperRef} style={{ width: "max-content", marginLeft: 0, overflow: 'visible' }}>
           <Card>
@@ -704,7 +698,7 @@ export default function Home() {
                 <div className="mt-3 text-sm text-muted-foreground">No data yet. Upload a CSV to begin.</div>
               ) : (
                 <div className="mt-3">
-                  {/* Slider controls for table/plot width - default 100% */}
+                  {/* Slider controls for table and plot width (percent). */}
                   <div className="mb-3 flex flex-col gap-2">
                     <div className="flex items-center gap-3">
                       <Label className="whitespace-nowrap w-28 text-right">Table width</Label>
@@ -741,9 +735,9 @@ export default function Home() {
                       <div className="text-sm w-16 text-right">{diamondScale.toFixed(1)}x</div>
                     </div>
                   </div>
-                  {/* align at top and offset the table so its center lines up with plot center */}
+                  {/* Position table and plot so the table's center aligns with the plot center. */}
                   <div className="inline-flex items-start gap-6">
-                    {/* left column: full table (no internal scrolling) */}
+                    {/* Left column: table (no internal scrolling). */}
                     <div ref={tableRef} className="flex-shrink-0" style={{ width: `${Math.max(200, Math.round(600 * (tableWidthPercent / 100)))}px` }}>
                       <div style={{ width: '100%' }}>
                         <table className="text-sm table-fixed w-full">
@@ -760,7 +754,7 @@ export default function Home() {
                               const totalWeight = augmented.reduce((a, b) => a + (b.weightCalc ?? 0), 0);
                               return (
                                 <tr key={i} className="border-b last:border-b-0">
-                                  {/* allow long study names to wrap inside the table cell */}
+                                  {/* Allow long study names to wrap inside the table cell. */}
                                   <td className="py-2 pr-3 max-w-[250px] break-words">{r.study}</td>
                                   <td className="py-2 text-right pr-3">{r.effect != null ? r.effect : ""}</td>
                                   <td className="py-2 text-right pr-3">{(r.ci_low != null && r.ci_high != null) ? `[${r.ci_low}, ${r.ci_high}]` : ""}</td>
@@ -773,9 +767,7 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* right column: full-width plot */}
-                    {/* Allow the plot wrapper to grow based on label width and the plot width percent */}
-                    {/** Desired width grows with the slider but also ensures there's room for long study labels. */}
+                    {/* Right column: plot. Width is controlled by slider and adjusted for label width. */}
                     <div ref={plotWrapperRef} style={{ width: `${Math.max(300, Math.round(Math.max(900 * (plotWidthPercent / 100), estimatedLabelPx + 600)))}px`, overflow: 'visible' }}>
                       <div className="flex items-center justify-end mb-2">
                         <Button size="sm" onClick={() => setFullOpen(true)}>Full screen</Button>
@@ -828,7 +820,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Fullscreen overlay for plot */}
+      {/* Fullscreen overlay for the expanded plot. */}
       {fullOpen && plotData && (
         <div className="fixed inset-0 z-50 flex items-start justify-center" style={{ background: "rgba(0,0,0,0.6)" }}>
           <div className="relative w-full h-full p-6">
