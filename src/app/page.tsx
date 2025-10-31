@@ -15,6 +15,16 @@ import {
   DropzoneContent,
   DropzoneEmptyState,
 } from "@/components/ui/shadcn-io/dropzone";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import {
+  ColorPicker,
+  ColorPickerSelection,
+  ColorPickerHue,
+  ColorPickerAlpha,
+  ColorPickerEyeDropper,
+  ColorPickerFormat,
+  ColorPickerOutput,
+} from "@/components/ui/shadcn-io/color-picker";
 
 // Load Plotly and the react-plotly factory only on the client to avoid server-side
 // evaluation of `plotly.js-basic-dist` (which references `self`/`window`).
@@ -62,6 +72,14 @@ export default function Home() {
   const [plotWidthPercent, setPlotWidthPercent] = useState<number>(100);
   // Diamond size multiplier (1 = current default). Scales all marker sizes while keeping proportions.
   const [diamondScale, setDiamondScale] = useState<number>(1);
+
+  // Color states: diamond fill color and connecting line color
+  // make default slightly transparent (about 20% less opaque)
+  const [diamondColor, setDiamondColor] = useState<string>("rgba(59,130,246,0.8)"); // default blue, 80% opacity
+  // axis color controls the vertical reference line (e.g. x=1)
+  const [axisColor, setAxisColor] = useState<string>("rgba(0,0,0,0.3)"); // default soft black used previously
+  // ciColor controls the error/CI lines for each study (separate from diamond fill)
+  const [ciColor, setCiColor] = useState<string>("rgba(59,130,246,0.8)");
 
   // Estimate label pixel width so we can expand the plot area when labels are long
   const estimatedLabelPx = useMemo(() => {
@@ -147,40 +165,70 @@ export default function Home() {
     });
   }, [rows, isRatio]);
 
-  // ----- Prepare Plotly data -----
-  const plotData = useMemo<Data | null>(() => {
+  // ----- Prepare Plotly data (two traces: CI lines + diamond markers) -----
+  const plotData = useMemo<Data[] | null>(() => {
     if (augmented.length === 0) return null;
-
-    // x: keep null for rows that lack an effect so Plotly will not draw a marker
-    const x = augmented.map((r) => (r.effect != null ? r.effect : null));
-
-    const error_array = augmented.map((r) => (r.ci_high != null && r.effect != null ? r.ci_high - r.effect : null));
-    const error_arrayminus = augmented.map((r) => (r.effect != null && r.ci_low != null ? r.effect - r.ci_low : null));
-
-    const error_x = {
-      type: "data" as const,
-      symmetric: false,
-      array: error_array,
-      arrayminus: error_arrayminus,
-      thickness: 1.5,
-      width: 0,
-    };
 
     const weights = augmented.map((r) => (r.weightCalc ?? 0));
     const totalWeight = weights.reduce((a, b) => a + b, 0);
     const maxW = Math.max(...weights, 0.000001);
     const maxMarkerSize = 28;
     const minMarkerSize = 6;
-    // Apply diamondScale so we can uniformly scale all marker sizes while keeping relative proportions.
     const markerSizes = weights.map((w) => ((w / maxW) * maxMarkerSize + minMarkerSize) * diamondScale);
 
-    return ({
+    // Parse diamondColor into rgb + opacity so markers don't force CI alpha changes.
+    let markerColorRgb = diamondColor;
+    let markerOpacity = 1;
+    try {
+      const m = String(diamondColor).match(/rgba?\((\s*\d+\s*),\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\)/i);
+      if (m) {
+        const r = m[1].trim();
+        const g = m[2].trim();
+        const b = m[3].trim();
+        const a = m[4] !== undefined ? parseFloat(m[4]) : 1;
+        markerColorRgb = `rgb(${r}, ${g}, ${b})`;
+        markerOpacity = Number.isFinite(a) ? a : 1;
+      }
+    } catch {
+      markerColorRgb = diamondColor;
+      markerOpacity = 1;
+    }
+
+    // Build CI line trace: use null separators so each study's CI is a separate segment.
+    const xLine: (number | null)[] = [];
+    const yLine: (number | null)[] = [];
+    augmented.forEach((r, i) => {
+      const yPos = augmented.length - i;
+      if (r.ci_low != null && r.ci_high != null) {
+        xLine.push(r.ci_low, r.ci_high, null);
+        yLine.push(yPos, yPos, null);
+      } else {
+        // push a null separator to keep segments aligned
+        xLine.push(null);
+        yLine.push(null);
+      }
+    });
+
+    const ciTrace: Data = {
+      x: xLine,
+      y: yLine,
+      mode: "lines",
+      type: "scatter",
+      line: { color: ciColor, width: 1.5 },
+      hoverinfo: "skip",
+      showlegend: false,
+    } as Data;
+
+    // Marker trace (diamonds)
+    const x = augmented.map((r) => (r.effect != null ? r.effect : null));
+    const y = augmented.map((_, i) => augmented.length - i);
+
+    const markerTrace: Data = {
       x,
-      y: augmented.map((_, i) => augmented.length - i),
-      mode: "markers" as const,
-      marker: { symbol: "diamond", size: markerSizes, line: { width: 1 } },
-      error_x,
-      type: "scatter" as const,
+      y,
+      mode: "markers",
+      type: "scatter",
+      marker: { symbol: "diamond", size: markerSizes, line: { width: 1 }, color: markerColorRgb, opacity: markerOpacity },
       hoverinfo: "text",
       text: augmented.map((r) => {
         const pct = totalWeight === 0 ? 0 : ((r.weightCalc ?? 0) / totalWeight) * 100;
@@ -191,8 +239,10 @@ export default function Home() {
         return parts.join("<br>");
       }),
       showlegend: false,
-    } as Data);
-  }, [augmented, diamondScale]);
+    } as Data;
+
+    return [ciTrace, markerTrace];
+  }, [augmented, diamondScale, diamondColor, ciColor]);
 
   // ----- Compute Plot layout -----
   const layout = useMemo<Partial<Layout>>(() => {
@@ -303,12 +353,12 @@ export default function Home() {
           x1: isRatio ? 1 : 0,
           y0: yMin,
           y1: yMax,
-          line: { color: "rgba(0,0,0,0.3)", width: 2 },
+          line: { color: axisColor, width: 2 },
         },
       ],
       height: plotHeight,
     };
-  }, [augmented, isRatio, xLabel, mirrorX, showGrid]);
+  }, [augmented, isRatio, xLabel, mirrorX, showGrid, axisColor]);
 
   const plotHeight = Math.max(400, augmented.length * 40 + 160);
 
@@ -323,6 +373,19 @@ export default function Home() {
   // when toggling options that Plotly sometimes doesn't recalc correctly in-place.
   const mainPlotRef = useRef<{ plotly: unknown; gd: unknown } | null>(null);
   const fullPlotRef = useRef<{ plotly: unknown; gd: unknown } | null>(null);
+
+  // ColorPicker now emits a normalized rgba string like 'rgba(255, 0, 0, 1)'
+  const handleDiamondColorChange = (v: string) => {
+    if (v) setDiamondColor(v);
+  };
+
+  const handleCiColorChange = (v: string) => {
+    if (v) setCiColor(v);
+  };
+
+  const handleAxisColorChange = (v: string) => {
+    if (v) setAxisColor(v);
+  };
 
   // Minimal type describing the Plotly subset we call at runtime. Use unknown
   // for inputs/outputs to avoid using `any` and satisfy lint rules.
@@ -508,6 +571,105 @@ export default function Home() {
                 <Label className="mb-1 block">X axis label</Label>
                 <Input value={xLabel} onChange={(e) => setXLabel((e.target as HTMLInputElement).value)} />
               </div>
+
+              <div className="mt-3 flex gap-4 items-center">
+                <div>
+                  <Label className="mb-1 block">Diamond color</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      {/* asChild makes the child element the actual trigger to avoid nested buttons */}
+                     <Button variant="outline" size="sm" style={{ background: diamondColor, borderColor: '#e2e8f0' }}>
+                        <span className="sr-only">Open diamond color picker</span>
+                        <div style={{ width: 18, height: 18, borderRadius: 4 }} />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent>
+                      <div style={{ width: 300 }}>
+                        <ColorPicker value={diamondColor} onChange={handleDiamondColorChange}>
+                          <div style={{ height: 160 }}>
+                            <ColorPickerSelection />
+                          </div>
+                          <div className="mt-3">
+                            <ColorPickerHue />
+                          </div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <ColorPickerAlpha className="flex-1" />
+                            <ColorPickerEyeDropper />
+                          </div>
+                          <div className="mt-2 flex items-center justify-between">
+                            <ColorPickerFormat />
+                            <ColorPickerOutput />
+                          </div>
+                        </ColorPicker>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                <div>
+                  <Label className="mb-1 block">CI line color</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                     <Button variant="outline" size="sm" style={{ background: ciColor, borderColor: '#e2e8f0' }}>
+                        <span className="sr-only">Open CI line color picker</span>
+                        <div style={{ width: 18, height: 18, borderRadius: 4 }} />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent>
+                      <div style={{ width: 300 }}>
+                        <ColorPicker value={ciColor} onChange={handleCiColorChange}>
+                          <div style={{ height: 160 }}>
+                            <ColorPickerSelection />
+                          </div>
+                          <div className="mt-3">
+                            <ColorPickerHue />
+                          </div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <ColorPickerAlpha className="flex-1" />
+                            <ColorPickerEyeDropper />
+                          </div>
+                          <div className="mt-2 flex items-center justify-between">
+                            <ColorPickerFormat />
+                            <ColorPickerOutput />
+                          </div>
+                        </ColorPicker>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                 <div>
+                  <Label className="mb-1 block">Axis color</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                     <Button variant="outline" size="sm" style={{ background: axisColor, borderColor: '#e2e8f0' }}>
+                        <span className="sr-only">Open axis color picker</span>
+                        <div style={{ width: 18, height: 18, borderRadius: 4 }} />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent>
+                      <div style={{ width: 300 }}>
+                        <ColorPicker value={axisColor} onChange={handleAxisColorChange}>
+                          <div style={{ height: 160 }}>
+                            <ColorPickerSelection />
+                          </div>
+                          <div className="mt-3">
+                            <ColorPickerHue />
+                          </div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <ColorPickerAlpha className="flex-1" />
+                            <ColorPickerEyeDropper />
+                          </div>
+                          <div className="mt-2 flex items-center justify-between">
+                            <ColorPickerFormat />
+                            <ColorPickerOutput />
+                          </div>
+                        </ColorPicker>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+               </div>
             </CardContent>
           </Card>
         </div>
@@ -606,7 +768,7 @@ export default function Home() {
                         <div style={{ width: '100%' }}>
                           <Plot
                             key={plotKey}
-                            data={[plotData] as Data[]}
+                            data={plotData as Data[]}
                             layout={layout}
                             useResizeHandler={true}
                             onInitialized={(figure: unknown, plotly: unknown) => { mainPlotRef.current = { plotly, gd: figure }; }}
@@ -638,6 +800,7 @@ export default function Home() {
                 <div>
                   <h4 className="font-medium mb-1">Tips</h4>
                   <ul className="text-sm space-y-1 list-inside list-disc">
+                    <li>Make sure your headers contain no spaces between comma and value. This doesn&#39;t matter for any values besides the headers.</li>
                     <li>For ratios (odds ratios, risk ratios, hazard ratios): keep <strong>&quot;Treat effects as ratios&quot;</strong> checked to pool on the log scale.</li>
                     <li>For mean differences (0 = no effect): uncheck the ratio option.</li>
                     <li>Optional <code>weight</code> column will be used directly if provided; otherwise weights are estimated from CIs.</li>
@@ -659,7 +822,7 @@ export default function Home() {
             <div className="mx-auto h-full max-w-7xl rounded bg-white dark:bg-slate-900 p-4 shadow-lg" style={{ height: fullHeight, width: "calc(100% - 48px)" }}>
               <Plot
                 key={plotKey + '-full'}
-                data={[plotData] as Data[]}
+                data={plotData as Data[]}
                 layout={{ ...layout, height: fullHeight }}
                 useResizeHandler={true}
                 onInitialized={(figure: unknown, plotly: unknown) => { fullPlotRef.current = { plotly, gd: figure }; }}

@@ -37,6 +37,9 @@ interface ColorPickerContextValue {
   setLightness: (lightness: number) => void;
   setAlpha: (alpha: number) => void;
   setMode: (mode: string) => void;
+  // interaction helpers to suspend controlled syncing while user is interacting
+  isInteracting: boolean;
+  setIsInteracting: (v: boolean) => void;
 }
 
 const ColorPickerContext = createContext<ColorPickerContextValue | undefined>(
@@ -53,10 +56,11 @@ export const useColorPicker = () => {
   return context;
 };
 
-export type ColorPickerProps = HTMLAttributes<HTMLDivElement> & {
+export type ColorPickerProps = Omit<HTMLAttributes<HTMLDivElement>, 'onChange'> & {
   value?: Parameters<typeof Color>[0];
   defaultValue?: Parameters<typeof Color>[0];
-  onChange?: (value: Parameters<typeof Color.rgb>[0]) => void;
+  // Emit a normalized color string to make controlled usage stable (no numeric-array <-> string back-and-forth)
+  onChange?: (value: string) => void;
 };
 
 export const ColorPicker = ({
@@ -66,44 +70,191 @@ export const ColorPicker = ({
   className,
   ...props
 }: ColorPickerProps) => {
-  const selectedColor = Color(value);
-  const defaultColor = Color(defaultValue);
+  // Normalize incoming values using Color and guard against invalid parses
+  const selectedColor = (() => {
+    try {
+      return Color(value);
+    } catch {
+      try {
+        return Color(defaultValue);
+      } catch {
+        return Color('#000000');
+      }
+    }
+  })();
 
-  const [hue, setHue] = useState(
-    selectedColor.hue() || defaultColor.hue() || 0
-  );
-  const [saturation, setSaturation] = useState(
-    selectedColor.saturationl() || defaultColor.saturationl() || 100
-  );
-  const [lightness, setLightness] = useState(
-    selectedColor.lightness() || defaultColor.lightness() || 50
-  );
-  const [alpha, setAlpha] = useState(
-    selectedColor.alpha() * 100 || defaultColor.alpha() * 100
-  );
+  const defaultColor = (() => {
+    try {
+      return Color(defaultValue);
+    } catch {
+      return Color('#000000');
+    }
+  })();
+
+  // Helper to coerce numeric values safely
+  const safeNum = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+
+  const [hue, setHue] = useState<number>(() => {
+    const h = selectedColor.hue();
+    return safeNum(h, safeNum(defaultColor.hue(), 0));
+  });
+  const [saturation, setSaturation] = useState<number>(() => {
+    const s = selectedColor.saturationl();
+    return safeNum(s, safeNum(defaultColor.saturationl(), 100));
+  });
+  const [lightness, setLightness] = useState<number>(() => {
+    const l = selectedColor.lightness();
+    return safeNum(l, safeNum(defaultColor.lightness(), 50));
+  });
+  const [alpha, setAlpha] = useState<number>(() => {
+    const a = selectedColor.alpha();
+    return Math.round(safeNum(a, safeNum(defaultColor.alpha(), 1)) * 100);
+  });
   const [mode, setMode] = useState('hex');
+  const [isInteracting, setIsInteracting] = useState(false);
 
-  // Update color when controlled value changes
+  // Refs to hold the latest state so we can compare when controlled `value` changes
+  const hueRef = useRef(hue);
+  const saturationRef = useRef(saturation);
+  const lightnessRef = useRef(lightness);
+  const alphaRef = useRef(alpha);
+
+  // raf + last emitted refs to throttle emits and avoid ping-pong
+  const emitRaf = useRef<number | null>(null);
+  // store last emitted numeric color to compare numerically
+  const lastEmittedNumeric = useRef<{ r: number; g: number; b: number; a: number } | null>(null);
+
   useEffect(() => {
-    if (value) {
-      const color = Color.rgb(value).rgb().object();
-
-      setHue(color.r);
-      setSaturation(color.g);
-      setLightness(color.b);
-      setAlpha(color.a);
-    }
-  }, [value]);
-
-  // Notify parent of changes
+    hueRef.current = hue;
+  }, [hue]);
   useEffect(() => {
-    if (onChange) {
-      const color = Color.hsl(hue, saturation, lightness).alpha(alpha / 100);
-      const rgba = color.rgb().array();
+    saturationRef.current = saturation;
+  }, [saturation]);
+  useEffect(() => {
+    lightnessRef.current = lightness;
+  }, [lightness]);
+  useEffect(() => {
+    alphaRef.current = alpha;
+  }, [alpha]);
 
-      onChange([rgba[0], rgba[1], rgba[2], alpha / 100]);
+  // Update color when controlled value changes - only apply differences to avoid re-triggering onChange
+  useEffect(() => {
+    if (value === undefined || value === null) return;
+    // If user is actively interacting, don't sync from controlled value to avoid ping-pong
+    if (isInteracting) return;
+
+    try {
+      // If the incoming value numerically matches what we last emitted, skip syncing to avoid ping-pong
+      if (lastEmittedNumeric.current) {
+        try {
+          const inc = Color(value);
+          const incRgb = inc.rgb().array().map((n) => Math.round(n));
+          const incAlpha = Number(inc.alpha().toFixed(3));
+          const le = lastEmittedNumeric.current;
+          if (
+            incRgb.length === 3 &&
+            incRgb[0] === le.r &&
+            incRgb[1] === le.g &&
+            incRgb[2] === le.b &&
+            Math.abs(incAlpha - le.a) <= 0.005
+          ) {
+            return;
+          }
+        } catch {
+          // fall through to normal parsing
+        }
+      }
+
+      const c = Color(value);
+      const h = c.hue();
+      const s = c.saturationl();
+      const l = c.lightness();
+      const a = c.alpha();
+
+      // small tolerance for floating point comparisons
+      const almostEqual = (a: number, b: number, eps = 0.5) => Math.abs(a - b) <= eps;
+
+      if (!Number.isNaN(h) && !almostEqual(hueRef.current, h)) {
+        setHue(h);
+      }
+      if (!Number.isNaN(s) && !almostEqual(saturationRef.current, s)) {
+        setSaturation(s);
+      }
+      if (!Number.isNaN(l) && !almostEqual(lightnessRef.current, l)) {
+        setLightness(l);
+      }
+      if (!Number.isNaN(a)) {
+        const alphaPct = Math.round(a * 100);
+        if (!almostEqual(alphaRef.current, alphaPct, 1)) {
+          setAlpha(alphaPct);
+        }
+      }
+    } catch {
+      // ignore parse errors
     }
-  }, [hue, saturation, lightness, alpha, onChange]);
+    // Intentionally depend on `value` and `isInteracting` so we skip sync while interacting
+  }, [value, isInteracting]);
+
+  // Schedule emitting the current internal color to the parent, throttled to animation frames
+  const scheduleEmit = useCallback(() => {
+    if (!onChange) return;
+    if (emitRaf.current !== null) {
+      cancelAnimationFrame(emitRaf.current);
+      emitRaf.current = null;
+    }
+
+    emitRaf.current = requestAnimationFrame(() => {
+      try {
+        const color = Color.hsl(hueRef.current, saturationRef.current, lightnessRef.current).alpha(alphaRef.current / 100);
+        const rgbArr = color.rgb().array().map((n) => Math.round(n));
+        const alphaNum = Number((color.alpha()).toFixed(3));
+        const outString = `rgba(${rgbArr[0]}, ${rgbArr[1]}, ${rgbArr[2]}, ${alphaNum})`;
+
+        // If incoming controlled value already equals our computed value numerically, skip emit
+        if (value !== undefined && value !== null) {
+          try {
+            const inc = Color(value);
+            const incRgb = inc.rgb().array().map((n) => Math.round(n));
+            const incAlpha = Number(inc.alpha().toFixed(3));
+            const sameRgb = incRgb.length === 3 && incRgb[0] === rgbArr[0] && incRgb[1] === rgbArr[1] && incRgb[2] === rgbArr[2];
+            const sameAlpha = Math.abs(incAlpha - alphaNum) <= 0.005;
+            if (sameRgb && sameAlpha) {
+              lastEmittedNumeric.current = { r: rgbArr[0], g: rgbArr[1], b: rgbArr[2], a: alphaNum };
+              emitRaf.current = null;
+              return;
+            }
+          } catch {
+            // fallthrough and emit
+          }
+        }
+
+        // If we already emitted this exact numeric color, skip
+        const le = lastEmittedNumeric.current;
+        if (le && le.r === rgbArr[0] && le.g === rgbArr[1] && le.b === rgbArr[2] && Math.abs(le.a - alphaNum) <= 0.005) {
+          emitRaf.current = null;
+          return;
+        }
+
+        lastEmittedNumeric.current = { r: rgbArr[0], g: rgbArr[1], b: rgbArr[2], a: alphaNum };
+        onChange(outString);
+      } catch {
+        // ignore
+      } finally {
+        emitRaf.current = null;
+      }
+    });
+  }, [onChange, value]);
+
+  // Trigger scheduleEmit whenever internal H/S/L/A changes
+  useEffect(() => {
+    scheduleEmit();
+    return () => {
+      if (emitRaf.current !== null) {
+        cancelAnimationFrame(emitRaf.current);
+        emitRaf.current = null;
+      }
+    };
+  }, [hue, saturation, lightness, alpha, scheduleEmit]);
 
   return (
     <ColorPickerContext.Provider
@@ -118,12 +269,16 @@ export const ColorPicker = ({
         setLightness,
         setAlpha,
         setMode,
+        isInteracting,
+        setIsInteracting,
       }}
     >
       <div
-        className={cn('flex size-full flex-col gap-4', className)}
+        className={cn('flex w-full h-full flex-col gap-4', className)}
         {...props}
-      />
+      >
+        {props.children}
+      </div>
     </ColorPickerContext.Provider>
   );
 };
@@ -136,7 +291,7 @@ export const ColorPickerSelection = memo(
     const [isDragging, setIsDragging] = useState(false);
     const [positionX, setPositionX] = useState(0);
     const [positionY, setPositionY] = useState(0);
-    const { hue, setSaturation, setLightness } = useColorPicker();
+    const { hue, setSaturation, setLightness, setIsInteracting } = useColorPicker();
 
     const backgroundGradient = useMemo(() => {
       return `linear-gradient(0deg, rgba(0,0,0,1), rgba(0,0,0,0)),
@@ -185,10 +340,12 @@ export const ColorPickerSelection = memo(
 
     return (
       <div
-        className={cn('relative size-full cursor-crosshair rounded', className)}
+        className={cn('relative w-full h-full cursor-crosshair rounded', className)}
         onPointerDown={(e) => {
           e.preventDefault();
           setIsDragging(true);
+          // notify provider that user interaction started
+          setIsInteracting(true);
           handlePointerMove(e.nativeEvent);
         }}
         ref={containerRef}
@@ -218,13 +375,15 @@ export const ColorPickerHue = ({
   className,
   ...props
 }: ColorPickerHueProps) => {
-  const { hue, setHue } = useColorPicker();
+  const { hue, setHue, setIsInteracting } = useColorPicker();
 
   return (
     <Slider.Root
       className={cn('relative flex h-4 w-full touch-none', className)}
       max={360}
       onValueChange={([hue]) => setHue(hue)}
+      onPointerDown={() => setIsInteracting(true)}
+      onPointerUp={() => setIsInteracting(false)}
       step={1}
       value={[hue]}
       {...props}
@@ -243,13 +402,15 @@ export const ColorPickerAlpha = ({
   className,
   ...props
 }: ColorPickerAlphaProps) => {
-  const { alpha, setAlpha } = useColorPicker();
+  const { alpha, setAlpha, setIsInteracting } = useColorPicker();
 
   return (
     <Slider.Root
       className={cn('relative flex h-4 w-full touch-none', className)}
       max={100}
       onValueChange={([alpha]) => setAlpha(alpha)}
+      onPointerDown={() => setIsInteracting(true)}
+      onPointerUp={() => setIsInteracting(false)}
       step={1}
       value={[alpha]}
       {...props}
@@ -320,7 +481,7 @@ export const ColorPickerOutput = ({
 
   return (
     <Select onValueChange={setMode} value={mode}>
-      <SelectTrigger className="h-8 w-20 shrink-0 text-xs" {...props}>
+      <SelectTrigger className={cn('h-8 w-20 shrink-0 text-xs', className)} {...props}>
         <SelectValue placeholder="Mode" />
       </SelectTrigger>
       <SelectContent>
@@ -337,12 +498,17 @@ export const ColorPickerOutput = ({
 type PercentageInputProps = ComponentProps<typeof Input>;
 
 const PercentageInput = ({ className, ...props }: PercentageInputProps) => {
+  // Avoid using `any`. Pull `value` out of props safely via unknown, and keep the input controlled
+  const { value: rawValue, ...rest } = props as unknown as { value?: string | number | null; [key: string]: unknown };
+  const valueStr = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+
   return (
     <div className="relative">
       <Input
         readOnly
         type="text"
-        {...props}
+        {...(rest as Record<string, unknown>)}
+        value={valueStr}
         className={cn(
           'h-8 w-[3.25rem] rounded-l-none bg-secondary px-2 text-xs shadow-none',
           className
